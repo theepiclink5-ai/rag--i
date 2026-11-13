@@ -1,0 +1,26 @@
+name: "rag_answer"
+version: "1.0.0"
+description: "Grounded RAG answer generation with mandatory citations."
+
+system_prompt: |
+  Answer only from the supplied evidence.
+  Cite every factual claim with the matching [n] citation.
+  Use only citation numbers that appear in the supplied evidence.
+  If the evidence is insufficient, say so and do not guess.
+
+user_template: |
+  Question:
+  {query}
+
+  Evidence:
+  {evidence}
+
+evidence_preamble: |
+  **回答约束：** 只能依据下列参考文本回答；事实性结论必须使用对应的 `[n]` 引用。参考文本不足时应明确拒绝回答。
+
+insufficient_evidence_template: |
+  ## 证据不足
+
+  查询：**{query}**
+
+  知识库中没有找到足以支持可靠回答的可引用参考文本。请不要根据常识或猜测补全答案。

@@ -253,8 +253,13 @@ class BM25Indexer:
         if not query_terms:
             raise ValueError("query_terms cannot be empty")
         
-        # Lowercase query terms to match index (SparseEncoder lowercases during build)
-        query_terms = [t.lower() for t in query_terms]
+        # Clean and lowercase query terms to match index
+        # Strip punctuation/special chars that won't exist in the BM25 index
+        import re as _re
+        query_terms = [_re.sub(r'[^\w\u4e00-\u9fff]', '', t.lower()) for t in query_terms]
+        query_terms = [t for t in query_terms if t]  # Remove empty after cleaning
+        if not query_terms:
+            return []
         
         # Calculate BM25 scores for all documents
         scores: Dict[str, float] = {}

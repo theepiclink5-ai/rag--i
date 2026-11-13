@@ -16,6 +16,7 @@ Design Principles:
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -489,26 +490,14 @@ class HybridSearch:
         filters: Optional[Dict[str, Any]],
         trace: Optional[Any],
     ) -> Tuple[Optional[List[RetrievalResult]], Optional[str]]:
-        """Run dense retrieval with error handling.
-        
-        Args:
-            query: Original query string.
-            filters: Filters to apply.
-            trace: Optional TraceContext.
-            
-        Returns:
-            Tuple of (results, error). If successful, error is None.
-        """
+        """Delegate to DenseRetriever with trace recording."""
         if self.dense_retriever is None:
             return None, "Dense retriever not configured"
-        
         try:
             _t0 = time.monotonic()
             results = self.dense_retriever.retrieve(
-                query=query,
-                top_k=self.config.dense_top_k,
-                filters=filters,
-                trace=trace,
+                query=query, top_k=self.config.dense_top_k,
+                filters=filters, trace=trace,
             )
             _elapsed = (time.monotonic() - _t0) * 1000.0
             if trace is not None:
@@ -525,50 +514,30 @@ class HybridSearch:
             logger.error(error_msg)
             if trace is not None:
                 trace.record_stage("dense_retrieval", {
-                    "method": "dense",
-                    "error": error_msg,
-                    "result_count": 0,
+                    "method": "dense", "error": error_msg, "result_count": 0,
                 })
             return None, error_msg
-    
+
     def _run_sparse_retrieval(
         self,
         keywords: List[str],
         filters: Optional[Dict[str, Any]],
         trace: Optional[Any],
     ) -> Tuple[Optional[List[RetrievalResult]], Optional[str]]:
-        """Run sparse retrieval with error handling.
-        
-        Args:
-            keywords: List of keywords from QueryProcessor.
-            filters: Filters to apply.
-            trace: Optional TraceContext.
-            
-        Returns:
-            Tuple of (results, error). If successful, error is None.
-        """
+        """Delegate to SparseRetriever with trace recording."""
         if self.sparse_retriever is None:
             return None, "Sparse retriever not configured"
-        
-        if not keywords:
-            return [], None  # No keywords, return empty (not an error)
-        
         try:
-            # Extract collection from filters if present
-            collection = filters.get('collection') if filters else None
-            
             _t0 = time.monotonic()
             results = self.sparse_retriever.retrieve(
-                keywords=keywords,
-                top_k=self.config.sparse_top_k,
-                collection=collection,
+                keywords=keywords, top_k=self.config.sparse_top_k,
                 trace=trace,
             )
             _elapsed = (time.monotonic() - _t0) * 1000.0
             if trace is not None:
                 trace.record_stage("sparse_retrieval", {
-                    "method": "bm25",
-                    "keyword_count": len(keywords),
+                    "method": "sparse",
+                    "provider": getattr(self.sparse_retriever, 'provider_name', 'unknown'),
                     "top_k": self.config.sparse_top_k,
                     "result_count": len(results) if results else 0,
                     "chunks": _snapshot_results(results),
@@ -577,62 +546,44 @@ class HybridSearch:
         except Exception as e:
             error_msg = f"Sparse retrieval error: {e}"
             logger.error(error_msg)
+            if trace is not None:
+                trace.record_stage("sparse_retrieval", {
+                    "method": "sparse", "error": error_msg, "result_count": 0,
+                })
             return None, error_msg
-    
+
     def _fuse_results(
         self,
-        dense_results: List[RetrievalResult],
-        sparse_results: List[RetrievalResult],
+        dense_results: Optional[List[RetrievalResult]],
+        sparse_results: Optional[List[RetrievalResult]],
         top_k: int,
         trace: Optional[Any],
     ) -> List[RetrievalResult]:
-        """Fuse Dense and Sparse results using RRF.
-        
-        Args:
-            dense_results: Results from dense retrieval.
-            sparse_results: Results from sparse retrieval.
-            top_k: Number of results to return after fusion.
-            trace: Optional TraceContext.
-            
-        Returns:
-            Fused and ranked list of RetrievalResults.
-        """
+        """Delegate to RRFFusion with trace recording."""
         if self.fusion is None:
-            # Fallback: interleave results (simple round-robin)
-            logger.warning("No fusion configured, using simple interleave")
+            # Fallback: simple interleaving
             return self._interleave_results(dense_results, sparse_results, top_k)
-        
-        # Build ranking lists for RRF
-        ranking_lists = []
-        if dense_results:
-            ranking_lists.append(dense_results)
-        if sparse_results:
-            ranking_lists.append(sparse_results)
-        
-        if not ranking_lists:
-            return []
-        
-        if len(ranking_lists) == 1:
-            # Only one source, no fusion needed
-            return ranking_lists[0][:top_k]
-        
-        _t0 = time.monotonic()
-        fused = self.fusion.fuse(
-            ranking_lists=ranking_lists,
-            top_k=top_k,
-            trace=trace,
-        )
-        _elapsed = (time.monotonic() - _t0) * 1000.0
-        if trace is not None:
-            trace.record_stage("fusion", {
-                "method": "rrf",
-                "input_lists": len(ranking_lists),
-                "top_k": top_k,
-                "result_count": len(fused),
-                "chunks": _snapshot_results(fused),
-            }, elapsed_ms=_elapsed)
-        return fused
-    
+        try:
+            _t0 = time.monotonic()
+            fused = self.fusion.fuse(
+                dense_results=dense_results or [],
+                sparse_results=sparse_results or [],
+                top_k=top_k,
+                trace=trace,
+            )
+            _elapsed = (time.monotonic() - _t0) * 1000.0
+            if trace is not None:
+                trace.record_stage("fusion", {
+                    "method": "rrf",
+                    "dense_count": len(dense_results) if dense_results else 0,
+                    "sparse_count": len(sparse_results) if sparse_results else 0,
+                    "fused_count": len(fused),
+                }, elapsed_ms=_elapsed)
+            return fused
+        except Exception as e:
+            logger.error(f"Fusion error: {e}, falling back to interleave")
+            return self._interleave_results(dense_results, sparse_results, top_k)
+
     def _interleave_results(
         self,
         dense_results: List[RetrievalResult],

@@ -230,6 +230,43 @@ class TestResponseBuilder:
         assert response.metadata["query"] == "Azure OpenAI 配置"
         assert response.metadata["collection"] == "docs"
         assert response.metadata["result_count"] == 3
+
+    def test_build_with_evidence_constraints(
+        self,
+        response_builder: ResponseBuilder,
+        sample_retrieval_results: List[RetrievalResult],
+    ) -> None:
+        response = response_builder.build(
+            results=sample_retrieval_results,
+            query="Azure",
+            evidence_status="supported",
+        )
+
+        assert response.metadata["answerable"] is True
+        assert response.metadata["citation_required"] is True
+        assert response.metadata["allowed_citations"] == [1, 2, 3]
+        assert response.metadata["prompt_name"] == "rag_answer"
+        assert response.metadata["prompt_version"] == "1.0.0"
+        assert all(f"[{index}]" in response.content for index in (1, 2, 3))
+        assert "只能依据" in response.content
+
+    def test_build_insufficient_evidence_response(
+        self, response_builder: ResponseBuilder
+    ) -> None:
+        response = response_builder.build_insufficient_evidence(
+            query="unknown",
+            collection="docs",
+            reason="scores below threshold",
+            top_score=0.05,
+        )
+
+        assert response.is_empty is True
+        assert response.metadata["answerable"] is False
+        assert response.metadata["allowed_citations"] == []
+        assert response.metadata["top_rerank_score"] == 0.05
+        assert response.metadata["prompt_name"] == "rag_answer"
+        assert response.metadata["prompt_version"] == "1.0.0"
+        assert "证据不足" in response.content
     
     def test_build_empty_response(
         self,

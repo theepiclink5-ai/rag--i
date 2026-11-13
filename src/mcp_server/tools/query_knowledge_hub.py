@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from mcp import types
 
 from src.core.response.response_builder import ResponseBuilder, MCPToolResponse
+from src.core.response.evidence_guard import EvidenceGuard, EvidenceStatus
 from src.core.settings import load_settings, resolve_path, Settings
 from src.core.trace import TraceContext, TraceCollector
 from src.core.types import RetrievalResult
@@ -125,6 +128,8 @@ class QueryKnowledgeHubTool:
         self._reranker = reranker
         self._embedding_client = None
         self._response_builder = response_builder or ResponseBuilder()
+        self._evidence_guard: Optional[EvidenceGuard] = None
+        self._collection_search_lock = threading.Lock()
         
         # Track initialization state
         self._initialized = False
@@ -221,6 +226,8 @@ class QueryKnowledgeHubTool:
         query: str,
         top_k: Optional[int] = None,
         collection: Optional[str] = None,
+        trace: Optional[TraceContext] = None,
+        collect_trace: bool = True,
     ) -> MCPToolResponse:
         """Execute the query_knowledge_hub tool.
         
@@ -251,28 +258,41 @@ class QueryKnowledgeHubTool:
             f"top_k={effective_top_k}, collection={effective_collection}"
         )
         
-        trace = TraceContext(trace_type="query")
+        trace = trace or TraceContext(trace_type="query")
         trace.metadata["query"] = query[:200]
         trace.metadata["top_k"] = effective_top_k
         trace.metadata["collection"] = effective_collection
         trace.metadata["source"] = "mcp"
+        trace.metadata.setdefault("mode", "retrieval")
 
         try:
-            # Initialize components for collection
-            # Run blocking I/O (embedding API, ChromaDB, BM25) in a thread
-            # to avoid blocking the async event loop / MCP stdio transport
-            import time as _time
-            _init_t0 = _time.monotonic()
-            await asyncio.to_thread(self._ensure_initialized, effective_collection)
-            _init_elapsed = (_time.monotonic() - _init_t0) * 1000.0
-            trace.record_stage("initialization", {
-                "collection": effective_collection,
-                "cold_start": _init_elapsed > 500,  # >500ms ≈ cold
-            }, elapsed_ms=_init_elapsed)
-            
-            # Perform hybrid search (blocking: embedding API + DB queries)
+            # PyTorch/Transformers model loading can terminate the process when
+            # cold-started from a Windows worker thread. Warm the reranker once
+            # on the event-loop thread; subsequent inference still runs via
+            # asyncio.to_thread below.
+            if self._reranker is None and self.settings.rerank.enabled:
+                from src.core.query_engine.reranker import create_core_reranker
+
+                started = time.monotonic()
+                self._reranker = create_core_reranker(settings=self.settings)
+                trace.record_stage(
+                    "reranker_startup",
+                    {
+                        "provider": self.settings.rerank.provider,
+                        "model": self.settings.rerank.model,
+                    },
+                    elapsed_ms=(time.monotonic() - started) * 1000.0,
+                )
+
+            # Initialization and search share collection-bound mutable state.
+            # Keep them atomic so concurrent A/B collection requests cannot
+            # switch the retriever between these two operations.
             results = await asyncio.to_thread(
-                self._perform_search, query, effective_top_k, trace,
+                self._search_collection,
+                effective_collection,
+                query,
+                effective_top_k,
+                trace,
             )
             
             # Apply reranking if enabled (may call LLM API)
@@ -280,13 +300,54 @@ class QueryKnowledgeHubTool:
                 results = await asyncio.to_thread(
                     self._apply_rerank, query, results, effective_top_k, trace,
                 )
+
+            if self._evidence_guard is None:
+                self._evidence_guard = EvidenceGuard.from_settings(self.settings)
+            started = time.monotonic()
+            decision = self._evidence_guard.evaluate(results)
+            trace.record_stage("evidence_guard", {
+                "status": decision.status.value,
+                "answerable": decision.answerable,
+                "input_count": len(results),
+                "citable_count": len(decision.citable_results),
+                "rejected_count": decision.rejected_count,
+                "top_rerank_score": decision.top_rerank_score,
+                "reason": decision.reason,
+            }, elapsed_ms=(time.monotonic() - started) * 1000.0)
+            results = decision.citable_results
+
+            if decision.status is EvidenceStatus.NO_EVIDENCE:
+                response = self._response_builder.build_insufficient_evidence(
+                    query=query,
+                    collection=effective_collection,
+                    reason=decision.reason,
+                    top_score=decision.top_rerank_score,
+                )
+                response.metadata.update({
+                    "mode": trace.metadata["mode"],
+                    "trace_id": trace.trace_id,
+                })
+                trace.metadata["final_results"] = []
+                if collect_trace:
+                    TraceCollector().collect(trace)
+                return response
             
             # Build response
             response = self._response_builder.build(
                 results=results,
                 query=query,
                 collection=effective_collection,
+                evidence_status=decision.status.value,
             )
+            response.metadata["evidence_rejected_count"] = decision.rejected_count
+            if decision.top_rerank_score is not None:
+                response.metadata["top_rerank_score"] = round(
+                    decision.top_rerank_score, 6
+                )
+            response.metadata.update({
+                "mode": trace.metadata["mode"],
+                "trace_id": trace.trace_id,
+            })
             
             # Store final results in trace for dashboard display
             trace.metadata["final_results"] = [
@@ -305,14 +366,25 @@ class QueryKnowledgeHubTool:
                 f"is_empty={response.is_empty}"
             )
             
-            TraceCollector().collect(trace)
+            if collect_trace:
+                TraceCollector().collect(trace)
             return response
             
         except Exception as e:
             logger.exception(f"query_knowledge_hub failed: {e}")
-            TraceCollector().collect(trace)
+            trace.metadata.update({"status": "error", "error": str(e)})
+            if collect_trace:
+                TraceCollector().collect(trace)
             # Return error response
-            return self._build_error_response(query, effective_collection, str(e))
+            response = self._build_error_response(
+                query, effective_collection, str(e)
+            )
+            response.metadata.update({
+                "mode": trace.metadata["mode"],
+                "trace_id": trace.trace_id,
+                "status": "error",
+            })
+            return response
     
     def _perform_search(
         self,
@@ -333,8 +405,16 @@ class QueryKnowledgeHubTool:
         if self._hybrid_search is None:
             raise RuntimeError("HybridSearch not initialized")
         
-        # Use a larger initial retrieval for reranking
-        initial_top_k = top_k * 2 if self.config.enable_rerank else top_k
+        # Retrieve a configurable candidate pool for the reranker.
+        rerank_enabled = (
+            self.config.enable_rerank
+            and self._reranker is not None
+            and self._reranker.is_enabled
+        )
+        candidate_top_k = int(
+            getattr(self.settings.rerank, "candidate_top_k", top_k * 2)
+        )
+        initial_top_k = max(top_k, candidate_top_k) if rerank_enabled else top_k
         
         try:
             results = self._hybrid_search.search(
@@ -348,6 +428,28 @@ class QueryKnowledgeHubTool:
         except Exception as e:
             logger.warning(f"Hybrid search failed: {e}")
             return []
+
+    def _search_collection(
+        self,
+        collection: str,
+        query: str,
+        top_k: int,
+        trace: TraceContext,
+    ) -> List[RetrievalResult]:
+        """Initialize and search one collection without cross-request races."""
+        with self._collection_search_lock:
+            started = time.monotonic()
+            self._ensure_initialized(collection)
+            elapsed_ms = (time.monotonic() - started) * 1000.0
+            trace.record_stage(
+                "initialization",
+                {
+                    "collection": collection,
+                    "cold_start": elapsed_ms > 500,
+                },
+                elapsed_ms=elapsed_ms,
+            )
+            return self._perform_search(query, top_k, trace)
     
     def _apply_rerank(
         self,

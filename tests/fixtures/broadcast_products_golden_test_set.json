@@ -1,0 +1,275 @@
+{
+  "description": "Golden test set for expanded fictional broadcast product knowledge base.",
+  "version": "2.0",
+  "collection": "broadcast_products",
+  "test_cases": [
+    {
+      "query": "BC-OUT-450P 是什么产品，适合什么场景？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-OUT-450P_spec.md"
+      ],
+      "reference_answer": "BC-OUT-450P 是 50W IP66 室外防水音柱，推荐覆盖 600-1000 平米，适合学校操场。"
+    },
+    {
+      "query": "BC-OUT-450S 能覆盖 800 平米学校操场吗？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-OUT-450S_spec.md",
+        "school_playground_800sqm_selection.md"
+      ],
+      "reference_answer": "不建议，覆盖 400-700 平米，800 平米操场余量不足。"
+    },
+    {
+      "query": "BC-OUT-450P 和 BC-OUT-460P 哪个更适合普通 800 平米学校操场？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-OUT-450P_spec.md",
+        "BC-OUT-460P_spec.md",
+        "school_playground_800sqm_selection.md"
+      ],
+      "reference_answer": "普通 800 平米操场首选 BC-OUT-450P。"
+    },
+    {
+      "query": "BC-HRN-120T 为什么不能作为学校操场首选？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-HRN-120T_spec.md",
+        "speaker_expired_and_limited_reports.md"
+      ],
+      "reference_answer": "报告过期且音色偏告警。"
+    },
+    {
+      "query": "商场走廊吊顶背景音乐推荐什么组合？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "mall_corridor_background_music.md",
+        "BC-CEL-830A_spec.md",
+        "BC-AMP-240Z_spec.md",
+        "BC-MIC-310P_spec.md"
+      ],
+      "reference_answer": "推荐 BC-CEL-830A + BC-AMP-240Z + BC-MIC-310P。"
+    },
+    {
+      "query": "工厂高噪声区域新项目应该选 BC-HRN-120T 还是 BC-HRN-150A？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "factory_noisy_area_selection.md",
+        "BC-HRN-150A_spec.md"
+      ],
+      "reference_answer": "选 BC-HRN-150A。"
+    },
+    {
+      "query": "BC-AMP-500Z 支持几个广播分区？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-AMP-500Z_spec.md"
+      ],
+      "reference_answer": "支持 5 个广播分区。"
+    },
+    {
+      "query": "至少 4 分区的项目可以用 BC-AMP-120Z 吗？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-AMP-120Z_spec.md"
+      ],
+      "reference_answer": "不能，只有 1 个分区。"
+    },
+    {
+      "query": "BC-AMP-240Z 为什么不是 800 平米操场首选？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-AMP-240Z_spec.md",
+        "school_playground_800sqm_selection.md"
+      ],
+      "reference_answer": "分区够但功率余量不足。"
+    },
+    {
+      "query": "BC-AMP-480Z 和 BC-AMP-500Z 做分区寻呼联动选哪个？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-AMP-480Z_spec.md",
+        "BC-AMP-500Z_spec.md"
+      ],
+      "reference_answer": "选 BC-AMP-500Z。"
+    },
+    {
+      "query": "BC-AMP-500N 可以作为新项目推荐吗？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-AMP-500N_spec.md",
+        "amplifier_restricted_reports.md"
+      ],
+      "reference_answer": "不能，暂停销售。"
+    },
+    {
+      "query": "BC-MIC-910C 是否支持分区寻呼？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-MIC-910C_spec.md"
+      ],
+      "reference_answer": "支持 1-16 个逻辑分区。"
+    },
+    {
+      "query": "BC-MIC-310P 和 BC-MIC-910C 哪个适合分区寻呼？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-MIC-310P_spec.md",
+        "BC-MIC-910C_spec.md"
+      ],
+      "reference_answer": "BC-MIC-910C。"
+    },
+    {
+      "query": "BC-MIC-720W 适合新项目分区寻呼吗？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-MIC-720W_spec.md",
+        "microphone_expired_and_limited_reports.md"
+      ],
+      "reference_answer": "不适合，报告过期且不支持分区。"
+    },
+    {
+      "query": "BC-MIC-930C 为什么不能作为新项目首选？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-MIC-930C_spec.md",
+        "sale_status_2026_q1.md"
+      ],
+      "reference_answer": "暂停销售。"
+    },
+    {
+      "query": "BR-SPK-2026-045 是哪个产品的报告？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "2026_speaker_valid_reports.md",
+        "BC-OUT-450P_spec.md"
+      ],
+      "reference_answer": "适用于 BC-OUT-450P。"
+    },
+    {
+      "query": "哪些室外产品因为报告过期或暂停销售不应优先推荐？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "speaker_expired_and_limited_reports.md",
+        "sale_status_2026_q1.md"
+      ],
+      "reference_answer": "BC-HRN-120T 报告过期，BC-GDN-360L 暂停销售。"
+    },
+    {
+      "query": "800 平米操场广播推荐音箱、功放、话筒组合。",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "school_playground_800sqm_selection.md",
+        "BC-OUT-450P_spec.md",
+        "BC-AMP-500Z_spec.md",
+        "BC-MIC-910C_spec.md"
+      ],
+      "reference_answer": "推荐 BC-OUT-450P + BC-AMP-500Z + BC-MIC-910C。"
+    },
+    {
+      "query": "800 平米操场要求可售、报告有效、防水、至少 4 分区、分区寻呼，推荐什么？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "school_playground_800sqm_selection.md",
+        "recommendation_priority_policy.md"
+      ],
+      "reference_answer": "推荐 BC-OUT-450P、BC-AMP-500Z、BC-MIC-910C。"
+    },
+    {
+      "query": "预算 12000 元内的 800 平米操场组合是什么？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "budget_under_12000_selection.md",
+        "public_price_list_2026.md"
+      ],
+      "reference_answer": "BC-OUT-450P + BC-AMP-500Z + BC-MIC-910C。"
+    },
+    {
+      "query": "如果客户要求快速交付，应该避开哪些型号？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "inventory_snapshot_2026_q1.md",
+        "sale_status_2026_q1.md"
+      ],
+      "reference_answer": "避开库存 0 或暂停销售型号。"
+    },
+    {
+      "query": "室外雨淋环境选音箱有什么规则？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "waterproof_installation_rules.md"
+      ],
+      "reference_answer": "IP65 以上，优先 IP66。"
+    },
+    {
+      "query": "小型办公室广播推荐哪套组合？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "small_office_broadcast_selection.md"
+      ],
+      "reference_answer": "BC-SPK-620W + BC-AMP-120Z + BC-MIC-310P。"
+    },
+    {
+      "query": "园区道路广播应该选 BC-PAR-410R 还是 BC-GDN-380S？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "outdoor_park_road_installation.md",
+        "BC-PAR-410R_spec.md",
+        "BC-GDN-380S_spec.md"
+      ],
+      "reference_answer": "道路线性覆盖优先 BC-PAR-410R。"
+    },
+    {
+      "query": "BC-GDN-360L 为什么不能作为新项目首选？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-GDN-360L_spec.md",
+        "sale_status_2026_q1.md"
+      ],
+      "reference_answer": "暂停销售且库存为 0。"
+    },
+    {
+      "query": "BC-OUT-520P 适合普通 800 平米操场吗？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-OUT-520P_spec.md"
+      ],
+      "reference_answer": "不优先，功率和成本冗余。"
+    },
+    {
+      "query": "BC-MAR-500S 什么时候比 BC-OUT-450P 更合适？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-MAR-500S_spec.md",
+        "BC-OUT-450P_spec.md"
+      ],
+      "reference_answer": "滨海盐雾环境更合适。"
+    },
+    {
+      "query": "BC-NET-420D 做独立操场项目有什么限制？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "BC-NET-420D_spec.md"
+      ],
+      "reference_answer": "需要额外控制器，部署复杂。"
+    },
+    {
+      "query": "Agent 回答推荐时为什么要同时看产品、报告和业务规则？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "recommendation_priority_policy.md",
+        "after_sales_and_replacement_policy.md"
+      ],
+      "reference_answer": "防止误推过期或停售型号。"
+    },
+    {
+      "query": "哪些问题最适合展示 Rerank 对相似产品排序的价值？",
+      "expected_chunk_ids": [],
+      "expected_sources": [
+        "README.md",
+        "recommendation_priority_policy.md"
+      ],
+      "reference_answer": "相似型号对比问题，如 450P/460P、480Z/500Z、310P/910C。"
+    }
+  ]
+}

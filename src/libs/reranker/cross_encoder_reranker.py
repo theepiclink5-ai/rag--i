@@ -8,8 +8,11 @@ and API-based endpoints.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
 from typing import Any, Dict, List, Optional
 
+from src.core.settings import resolve_path
 from src.libs.reranker.base_reranker import BaseReranker
 
 logger = logging.getLogger(__name__)
@@ -39,7 +42,7 @@ class CrossEncoderReranker(BaseReranker):
         self,
         settings: Any,
         model: Optional[Any] = None,
-        timeout: float = 10.0,
+        timeout: Optional[float] = None,
         **kwargs: Any
     ) -> None:
         """Initialize the Cross-Encoder Reranker.
@@ -53,8 +56,46 @@ class CrossEncoderReranker(BaseReranker):
             **kwargs: Additional provider-specific parameters.
         """
         self.settings = settings
-        self.timeout = timeout
+        rerank_settings = getattr(settings, "rerank", None)
+        configured_timeout = getattr(rerank_settings, "timeout", None)
+        configured_batch_size = getattr(rerank_settings, "batch_size", None)
+        configured_max_length = getattr(rerank_settings, "max_length", None)
+        configured_cache_dir = getattr(rerank_settings, "cache_dir", None)
+        configured_local_files_only = getattr(
+            rerank_settings, "local_files_only", False
+        )
+        self.timeout = float(
+            timeout
+            if timeout is not None
+            else configured_timeout
+            if isinstance(configured_timeout, (int, float))
+            else 10.0
+        )
+        self.batch_size = int(
+            configured_batch_size
+            if isinstance(configured_batch_size, int)
+            else 16
+        )
+        self.max_length = int(
+            configured_max_length
+            if isinstance(configured_max_length, int)
+            else 512
+        )
+        self.cache_dir = str(
+            resolve_path(configured_cache_dir)
+            if isinstance(configured_cache_dir, str) and configured_cache_dir.strip()
+            else resolve_path("data/models/huggingface/hub")
+        )
+        self.local_files_only = bool(configured_local_files_only)
         self.kwargs = kwargs
+        self._predict_lock = threading.Lock()
+
+        if self.timeout <= 0:
+            raise ValueError("Cross-Encoder timeout must be greater than zero")
+        if self.batch_size < 1:
+            raise ValueError("Cross-Encoder batch_size must be greater than zero")
+        if self.max_length < 1:
+            raise ValueError("Cross-Encoder max_length must be greater than zero")
         
         # Initialize or inject model
         if model is not None:
@@ -114,7 +155,12 @@ class CrossEncoderReranker(BaseReranker):
         
         try:
             logger.info(f"Loading Cross-Encoder model: {model_name}")
-            model = CrossEncoder(model_name)
+            model = CrossEncoder(
+                model_name,
+                max_length=self.max_length,
+                cache_folder=self.cache_dir,
+                local_files_only=self.local_files_only,
+            )
             logger.info(f"Cross-Encoder model loaded successfully: {model_name}")
             return model
         except Exception as e:
@@ -219,13 +265,49 @@ class CrossEncoderReranker(BaseReranker):
         """
         try:
             # Use model.predict() to score all pairs in batch
-            scores = self.model.predict(pairs)
+            result_queue: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+            def _predict() -> None:
+                try:
+                    with self._predict_lock:
+                        value = self.model.predict(
+                            pairs,
+                            batch_size=self.batch_size,
+                            show_progress_bar=False,
+                        )
+                    result_queue.put((True, value))
+                except Exception as exc:
+                    result_queue.put((False, exc))
+
+            worker = threading.Thread(
+                target=_predict,
+                name="cross-encoder-predict",
+                daemon=True,
+            )
+            worker.start()
+
+            try:
+                succeeded, payload = result_queue.get(timeout=self.timeout)
+            except queue.Empty as exc:
+                raise CrossEncoderRerankError(
+                    f"Cross-Encoder scoring timed out after {self.timeout:.1f}s"
+                ) from exc
+
+            if not succeeded:
+                raise payload
+            scores = payload
             
             # Convert numpy array to list if needed
             if hasattr(scores, 'tolist'):
                 scores = scores.tolist()
+
+            if len(scores) != len(pairs):
+                raise CrossEncoderRerankError(
+                    "Cross-Encoder returned an unexpected number of scores: "
+                    f"expected {len(pairs)}, got {len(scores)}"
+                )
             
-            return scores
+            return [float(score) for score in scores]
             
         except Exception as e:
             raise CrossEncoderRerankError(

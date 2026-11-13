@@ -226,3 +226,15 @@ class TestGoldenTestSetFixture:
         assert len(cases) >= 1
         for tc in cases:
             assert tc.query.strip(), "Query must be non-empty"
+
+    def test_broadcast_products_golden_set_loads(self) -> None:
+        golden_path = Path("tests/fixtures/broadcast_products_golden_test_set.json")
+        if not golden_path.exists():
+            pytest.skip("Broadcast products golden test set not present")
+
+        cases = load_test_set(golden_path)
+
+        assert len(cases) == 30
+        for tc in cases:
+            assert tc.query.strip(), "Query must be non-empty"
+            assert tc.expected_sources, "Broadcast cases should define expected sources"

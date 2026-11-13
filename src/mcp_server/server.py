@@ -7,6 +7,11 @@ while all logs go to stderr.
 
 from __future__ import annotations
 
+# pysqlite3 patch for ChromaDB compatibility on systems with sqlite3 < 3.35.0
+__import__("pysqlite3")
+import sys
+sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+
 import asyncio
 import sys
 from typing import TYPE_CHECKING

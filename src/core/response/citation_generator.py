@@ -111,7 +111,12 @@ class CitationGenerator:
         metadata = result.metadata or {}
         
         # Extract source path
-        source = metadata.get("source_path", "unknown")
+        source = (
+            metadata.get("source_path")
+            or metadata.get("source")
+            or metadata.get("source_ref")
+            or "unknown"
+        )
         
         # Extract page number (may be int or string)
         page = metadata.get("page") or metadata.get("page_num")

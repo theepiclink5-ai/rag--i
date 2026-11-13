@@ -2,6 +2,7 @@
 
 from typing import Any, Dict, List
 from unittest.mock import Mock, patch
+import time
 
 import pytest
 
@@ -20,7 +21,12 @@ class MockCrossEncoder:
         self.call_count = 0
         self.last_pairs = None
     
-    def predict(self, pairs: List[tuple[str, str]]) -> List[float]:
+    def predict(
+        self,
+        pairs: List[tuple[str, str]],
+        batch_size: int = 16,
+        show_progress_bar: bool = False,
+    ) -> List[float]:
         """Return deterministic scores for testing.
         
         Scoring strategy: score based on presence of keywords in passage.
@@ -267,6 +273,33 @@ class TestCrossEncoderRerankerScoring:
         
         assert mock_model.call_count == 1
         assert mock_model.last_pairs == pairs
+
+    def test_score_pairs_rejects_mismatched_score_count(self, mock_settings):
+        """A backend must return exactly one score for every input pair."""
+        mock_model = Mock()
+        mock_model.predict.return_value = [0.5]
+        reranker = CrossEncoderReranker(settings=mock_settings, model=mock_model)
+
+        with pytest.raises(CrossEncoderRerankError, match="number of scores"):
+            reranker._score_pairs([("q", "first"), ("q", "second")])
+
+    def test_score_pairs_times_out(self, mock_settings):
+        """Slow model inference should fail fast so CoreReranker can fall back."""
+        mock_model = Mock()
+
+        def slow_predict(*args, **kwargs):
+            time.sleep(0.1)
+            return [0.5]
+
+        mock_model.predict.side_effect = slow_predict
+        reranker = CrossEncoderReranker(
+            settings=mock_settings,
+            model=mock_model,
+            timeout=0.01,
+        )
+
+        with pytest.raises(CrossEncoderRerankError, match="timed out"):
+            reranker._score_pairs([("q", "passage")])
 
 
 class TestCrossEncoderRerankerSorting:

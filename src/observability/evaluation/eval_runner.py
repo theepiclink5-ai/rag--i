@@ -17,7 +17,7 @@ import logging
 import time
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
 
@@ -194,6 +194,7 @@ class EvalRunner:
         test_set_path: str | Path,
         top_k: int = 10,
         collection: Optional[str] = None,
+        progress_callback: Optional[Callable[[int, int, str, float], None]] = None,
     ) -> EvalReport:
         """Run evaluation on the golden test set.
 
@@ -238,6 +239,11 @@ class EvalRunner:
                 answer_override=answer_override,
             )
             report.query_results.append(qr)
+            if progress_callback is not None:
+                try:
+                    progress_callback(idx + 1, len(test_cases), tc.query, qr.elapsed_ms)
+                except Exception:
+                    pass  # Never let callback errors break evaluation
 
         report.total_elapsed_ms = (time.monotonic() - t0) * 1000.0
         report.aggregate_metrics = self._aggregate_metrics(report.query_results)
@@ -285,25 +291,34 @@ class EvalRunner:
             answer = self._generate_answer(test_case.query, retrieved_chunks)
         qr.generated_answer = answer
 
-        # Step 3: Build ground truth
-        ground_truth = (
-            {"ids": test_case.expected_chunk_ids}
-            if test_case.expected_chunk_ids
-            else None
-        )
+        # Step 3: Build ground truth (always include reference_answer for
+        # context_recall and answer_correctness evaluators, aligned with MCP Server)
+        ground_truth = {
+            "ids": test_case.expected_chunk_ids,
+            "sources": test_case.expected_sources,
+            "reference_answer": test_case.reference_answer,
+        }
 
-        # Step 4: Evaluate
-        try:
-            metrics = self.evaluator.evaluate(  # type: ignore[union-attr]
-                query=test_case.query,
-                retrieved_chunks=retrieved_chunks,
-                generated_answer=answer,
-                ground_truth=ground_truth,
+        # Step 4: Evaluate — skip if no chunks retrieved (Ragas requires non-empty context)
+        if not retrieved_chunks:
+            logger.warning(
+                "Skipping evaluation for '%s': retrieved_chunks is empty. "
+                "Check BM25/vector index availability.",
+                test_case.query[:40],
             )
-            qr.metrics = metrics
-        except Exception as exc:
-            logger.warning("Evaluation failed for '%s': %s", test_case.query[:40], exc)
-            qr.metrics = {}
+            qr.metrics = {"_skipped": True, "_reason": "no_retrieved_chunks"}
+        else:
+            try:
+                metrics = self.evaluator.evaluate(  # type: ignore[union-attr]
+                    query=test_case.query,
+                    retrieved_chunks=retrieved_chunks,
+                    generated_answer=answer,
+                    ground_truth=ground_truth,
+                )
+                qr.metrics = metrics
+            except Exception as exc:
+                logger.warning("Evaluation failed for '%s': %s", test_case.query[:40], exc)
+                qr.metrics = {"_error": str(exc)}
 
         qr.elapsed_ms = (time.monotonic() - t0) * 1000.0
         return qr
@@ -344,16 +359,51 @@ class EvalRunner:
             return []
 
     def _generate_answer(self, query: str, chunks: List[Any]) -> str:
-        """Generate an answer from retrieved chunks.
-
-        If a custom answer_generator is provided, use it.
-        Otherwise, concatenate chunk texts as a simple placeholder.
+        """Generate an answer using LLM + RagAnswerPrompt (same as MCP Server).
+        Falls back to chunk concatenation only when LLM is unavailable.
         """
         if self.answer_generator is not None:
             try:
                 return self.answer_generator(query, chunks)
             except Exception as exc:
-                logger.warning("Answer generation failed: %s", exc)
+                logger.warning("Custom answer generator failed: %s", exc)
+
+        # Try LLM-based generation (aligned with AskKnowledgeHubTool)
+        if self.settings is not None:
+            try:
+                from src.core.response.prompt_config import RagAnswerPrompt
+                from src.libs.llm import LLMFactory, Message
+
+                llm = LLMFactory.create(self.settings)
+                prompt = RagAnswerPrompt.load()
+
+                # Build evidence text aligned with retrieval_tool output format
+                evidence_parts = []
+                for c in chunks:
+                    if isinstance(c, dict):
+                        evidence_parts.append(c.get("text", str(c)))
+                    elif hasattr(c, "text"):
+                        evidence_parts.append(str(getattr(c, "text")))
+                    else:
+                        evidence_parts.append(str(c))
+                evidence = "\n\n".join(evidence_parts)
+
+                messages = [
+                    Message(role="system", content=prompt.system_prompt),
+                    Message(
+                        role="user",
+                        content=prompt.build_user_prompt(
+                            query=query, evidence=evidence,
+                        ),
+                    ),
+                ]
+                completion = llm.chat(messages)
+                return completion.content
+            except Exception as exc:
+                logger.warning(
+                    "LLM answer generation failed, falling back to concatenation: %s",
+                    exc,
+                )
 
         # Fallback: concatenate chunk texts
         texts = []
@@ -366,6 +416,7 @@ class EvalRunner:
                 texts.append(str(getattr(c, "text")))
             else:
                 texts.append(str(c))
+        return " ".join(texts[:5])  # first 5 chunks
 
         return " ".join(texts[:5])  # first 5 chunks
 

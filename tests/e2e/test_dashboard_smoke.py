@@ -229,7 +229,11 @@ class TestDashboardSmoke:
             f"Query Traces page raised an exception: {at.exception}"
         )
         text = _collect_text(at)
-        assert "query" in text.lower() or "trace" in text.lower()
+        assert (
+            "query" in text.lower()
+            or "trace" in text.lower()
+            or "查询追踪" in text
+        )
 
     # ------------------------------------------------------------------
     # 6. Evaluation Panel page

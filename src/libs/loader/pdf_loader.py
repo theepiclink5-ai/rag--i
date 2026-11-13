@@ -13,15 +13,10 @@ Features:
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-try:
-    from markitdown import MarkItDown
-    MARKITDOWN_AVAILABLE = True
-except ImportError:
-    MARKITDOWN_AVAILABLE = False
 
 try:
     import fitz  # PyMuPDF
@@ -30,10 +25,15 @@ except ImportError:
     PYMUPDF_AVAILABLE = False
 
 from PIL import Image
-import io
 
 from src.core.types import Document
 from src.libs.loader.base_loader import BaseLoader
+from src.libs.loader.parse_report_writer import PdfParseReportWriter
+from src.libs.loader.pdf_parsers import (
+    BasePdfParser,
+    MarkItDownPdfParser,
+    PdfParseQualityAnalyzer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +58,10 @@ class PdfLoader(BaseLoader):
     def __init__(
         self,
         extract_images: bool = True,
-        image_storage_dir: str | Path = "data/images"
+        image_storage_dir: str | Path = "data/images",
+        parser: Optional[BasePdfParser] = None,
+        quality_analyzer: Optional[PdfParseQualityAnalyzer] = None,
+        parse_report_dir: str | Path | None = None,
     ):
         """Initialize PDF Loader.
         
@@ -66,15 +69,14 @@ class PdfLoader(BaseLoader):
             extract_images: Whether to extract images from PDFs.
             image_storage_dir: Base directory for storing extracted images.
         """
-        if not MARKITDOWN_AVAILABLE:
-            raise ImportError(
-                "MarkItDown is required for PdfLoader. "
-                "Install with: pip install markitdown"
-            )
-        
         self.extract_images = extract_images
         self.image_storage_dir = Path(image_storage_dir)
-        self._markitdown = MarkItDown()
+        self.parser = parser or MarkItDownPdfParser()
+        self.quality_analyzer = quality_analyzer or PdfParseQualityAnalyzer()
+        self.parse_report_writer = (
+            PdfParseReportWriter(parse_report_dir) if parse_report_dir else None
+        )
+        self._markitdown = getattr(self.parser, "_markitdown", None)
     
     def load(self, file_path: str | Path) -> Document:
         """Load and parse a PDF file.
@@ -99,19 +101,33 @@ class PdfLoader(BaseLoader):
         doc_hash = self._compute_file_hash(path)
         doc_id = f"doc_{doc_hash[:16]}"
         
-        # Parse PDF with MarkItDown
-        try:
-            result = self._markitdown.convert(str(path))
-            text_content = result.text_content if hasattr(result, 'text_content') else str(result)
-        except Exception as e:
-            logger.error(f"Failed to parse PDF {path}: {e}")
-            raise RuntimeError(f"PDF parsing failed: {e}") from e
+        parse_result = self.parser.parse(path)
+        text_content = parse_result.text
+        parse_metadata = dict(parse_result.metadata)
+        if "parse_quality_score" not in parse_metadata:
+            quality_report = self.quality_analyzer.analyze(
+                text=text_content,
+                file_path=path,
+                table_count=len(parse_result.tables),
+            )
+            parse_metadata.update(
+                {
+                    "parse_quality_score": quality_report.score,
+                    "parse_quality_reasons": quality_report.reasons,
+                    "parse_quality_metrics": quality_report.metrics,
+                    "should_use_external_pdf_api": (
+                        quality_report.should_use_external_api
+                    ),
+                }
+            )
         
         # Initialize metadata
         metadata: Dict[str, Any] = {
             "source_path": str(path),
             "doc_type": "pdf",
             "doc_hash": doc_hash,
+            "parser_provider": parse_result.parser_provider,
+            **parse_metadata,
         }
         
         # Extract title from first heading if available
@@ -132,6 +148,18 @@ class PdfLoader(BaseLoader):
                     f"Image extraction failed for {path}, continuing with text-only: {e}"
                 )
         
+        if self.parse_report_writer is not None:
+            try:
+                report_path = self.parse_report_writer.write(
+                    source_path=path,
+                    doc_id=doc_id,
+                    metadata=metadata,
+                    text=text_content,
+                )
+                metadata["parse_report_path"] = str(report_path)
+            except Exception as exc:
+                logger.warning("Failed to write PDF parse report for %s: %s", path, exc)
+
         return Document(
             id=doc_id,
             text=text_content,

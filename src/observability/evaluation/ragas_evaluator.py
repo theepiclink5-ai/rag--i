@@ -13,7 +13,31 @@ Design Principles:
 
 from __future__ import annotations
 
+# === DeepSeek Thinking Mode Patch (Module-Level) ===
+# Must be applied at import time BEFORE any AsyncOpenAI client is created.
+# DeepSeek does not support thinking mode + tool_choice simultaneously,
+# and Ragas uses structured tool calls for evaluation.
+try:
+    from openai.resources.chat.completions import AsyncCompletions as _AsyncCompletions
+    _orig_async_completions_create = _AsyncCompletions.create
+
+    async def _deepseek_no_think_create(self, *args, **kwargs):
+        # Only inject for DeepSeek API (check client base_url)
+        base = str(getattr(self._client, "base_url", "") or "")
+        if "deepseek" in base.lower():
+            extra = dict(kwargs.get("extra_body") or {})
+            extra["thinking"] = {"type": "disabled"}
+            kwargs["extra_body"] = extra
+        return await _orig_async_completions_create(self, *args, **kwargs)
+
+    _AsyncCompletions.create = _deepseek_no_think_create
+except Exception:
+    pass  # Non-DeepSeek environments won't be affected
+# === End DeepSeek Patch ===
+
+
 import logging
+import os
 from typing import Any, Dict, List, Optional, Sequence
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator
@@ -24,8 +48,9 @@ logger = logging.getLogger(__name__)
 FAITHFULNESS = "faithfulness"
 ANSWER_RELEVANCY = "answer_relevancy"
 CONTEXT_PRECISION = "context_precision"
+CONTEXT_RECALL = "context_recall"
 
-SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
+SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION, CONTEXT_RECALL}
 
 
 def _import_ragas() -> None:
@@ -137,8 +162,14 @@ class RagasEvaluator(BaseEvaluator):
 
         contexts = self._extract_texts(retrieved_chunks)
 
+        # Extract reference_answer from ground_truth for context_recall
+        reference_answer = None
+        if isinstance(ground_truth, dict):
+            reference_answer = ground_truth.get("reference_answer")
+        elif isinstance(ground_truth, str):
+            reference_answer = ground_truth
         try:
-            result = self._run_ragas(query, contexts, generated_answer)
+            result = self._run_ragas(query, contexts, generated_answer, reference_answer=reference_answer)
         except Exception as exc:
             logger.error("Ragas evaluation failed: %s", exc, exc_info=True)
             raise RuntimeError(f"Ragas evaluation failed: {exc}") from exc
@@ -152,6 +183,7 @@ class RagasEvaluator(BaseEvaluator):
         query: str,
         contexts: List[str],
         answer: str,
+        reference_answer: Optional[str] = None,
     ) -> Dict[str, float]:
         """Execute Ragas collections metrics and return normalised scores.
 
@@ -166,8 +198,11 @@ class RagasEvaluator(BaseEvaluator):
             ContextPrecisionWithoutReference,
         )
 
-        # Build LLM / Embedding wrappers from settings
-        llm, embeddings = self._build_wrappers()
+        # Only AnswerRelevancy needs embeddings. Other metrics should not fail
+        # merely because an embedding provider is unavailable.
+        llm, embeddings = self._build_wrappers(
+            require_embeddings=ANSWER_RELEVANCY in self._metric_names
+        )
 
         scores: Dict[str, float] = {}
 
@@ -185,6 +220,19 @@ class RagasEvaluator(BaseEvaluator):
                 result = m.score(
                     user_input=query, response=answer, retrieved_contexts=contexts,
                 )
+            elif metric_name == CONTEXT_RECALL:
+                if not reference_answer or not reference_answer.strip():
+                    logger.warning(
+                        "context_recall requested but no reference_answer provided; skipping."
+                    )
+                    continue
+                from ragas.metrics.collections import ContextRecall
+                m = ContextRecall(llm=llm)
+                result = m.score(
+                    user_input=query,
+                    retrieved_contexts=contexts,
+                    reference=reference_answer,
+                )
             else:
                 continue
 
@@ -192,7 +240,7 @@ class RagasEvaluator(BaseEvaluator):
 
         return scores
 
-    def _build_wrappers(self) -> tuple:
+    def _build_wrappers(self, require_embeddings: bool = True) -> tuple:
         """Build Ragas LLM and Embedding wrappers from project settings.
 
         Uses Ragas 0.4+ native API (InstructorLLM + OpenAIEmbeddings)
@@ -225,16 +273,32 @@ class RagasEvaluator(BaseEvaluator):
                 api_key=llm_cfg.api_key,
                 azure_endpoint=llm_azure_endpoint or llm_cfg.azure_endpoint,
                 api_version=getattr(llm_cfg, "api_version", None) or "2024-02-15-preview",
+                timeout=120.0,
             )
         elif provider == "openai":
-            llm_client = AsyncOpenAI(api_key=llm_cfg.api_key)
+            llm_client = AsyncOpenAI(api_key=llm_cfg.api_key, timeout=120.0)
+        elif provider == "deepseek":
+            api_key = llm_cfg.api_key or os.environ.get("DEEPSEEK_API_KEY")
+            if not api_key:
+                raise ValueError("DEEPSEEK_API_KEY is required for Ragas evaluation")
+            llm_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=getattr(llm_cfg, "base_url", None)
+                or "https://api.deepseek.com",
+                timeout=120.0,
+            )
         else:
             raise ValueError(
                 f"Unsupported LLM provider for Ragas: '{provider}'. "
-                "Supported: azure, openai"
+                "Supported: azure, openai, deepseek"
             )
 
-        llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=8192)
+        # Structured Ragas verdicts can consume substantial reasoning tokens on
+        # reasoning-capable models before emitting their JSON payload.
+        llm = llm_factory(llm_cfg.model, client=llm_client, max_tokens=32768)
+
+        if not require_embeddings:
+            return llm, None
 
         # ── Embeddings ──
         emb_cfg = self.settings.embedding
@@ -252,13 +316,28 @@ class RagasEvaluator(BaseEvaluator):
                 api_key=emb_cfg.api_key,
                 azure_endpoint=emb_azure_endpoint or emb_cfg.azure_endpoint,
                 api_version=getattr(emb_cfg, "api_version", None) or "2024-02-15-preview",
+                timeout=120.0,
             )
         elif emb_provider == "openai":
-            emb_client = AsyncOpenAI(api_key=emb_cfg.api_key)
+            emb_base_url = getattr(emb_cfg, "base_url", None)
+            emb_client_kwargs: dict = {"api_key": emb_cfg.api_key, "timeout": 120.0}
+            if emb_base_url:
+                emb_client_kwargs["base_url"] = emb_base_url
+            emb_client = AsyncOpenAI(**emb_client_kwargs)
+        elif emb_provider == "jina":
+            api_key = emb_cfg.api_key or os.environ.get("JINA_API_KEY")
+            if not api_key:
+                raise ValueError("JINA_API_KEY is required for Ragas evaluation")
+            emb_client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=getattr(emb_cfg, "base_url", None)
+                or "https://api.jina.ai/v1",
+                timeout=120.0,
+            )
         else:
             raise ValueError(
                 f"Unsupported embedding provider for Ragas: '{emb_provider}'. "
-                "Supported: azure, openai"
+                "Supported: azure, openai, jina"
             )
 
         embeddings = OpenAIEmbeddings(model=emb_cfg.model, client=emb_client)

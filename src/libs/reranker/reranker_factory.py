@@ -27,6 +27,18 @@ def _lazy_import_cross_encoder_reranker():
     return CrossEncoderReranker
 
 
+def _lazy_import_subprocess_reranker():
+    """Lazy import the out-of-process Cross-Encoder proxy."""
+    from src.libs.reranker.subprocess_reranker import SubprocessCrossEncoderReranker
+    return SubprocessCrossEncoderReranker
+
+
+def _lazy_import_jina_reranker():
+    """Lazy import the hosted Jina reranker."""
+    from src.libs.reranker.jina_reranker import JinaReranker
+    return JinaReranker
+
+
 class RerankerFactory:
     """Factory for creating Reranker provider instances.
     
@@ -85,6 +97,9 @@ class RerankerFactory:
             CrossEncoderReranker = _lazy_import_cross_encoder_reranker()
             cls.register_provider("cross_encoder", CrossEncoderReranker)
         
+        if "jina" not in cls._PROVIDERS:
+            cls.register_provider("jina", _lazy_import_jina_reranker())
+
         try:
             rerank_settings = settings.rerank
             if rerank_settings is None:
@@ -101,6 +116,11 @@ class RerankerFactory:
             return NoneReranker(settings=settings, **override_kwargs)
         
         provider_class = cls._PROVIDERS.get(provider_name)
+        if (
+            provider_name == "cross_encoder"
+            and getattr(rerank_settings, "execution_mode", "in_process") == "subprocess"
+        ):
+            provider_class = _lazy_import_subprocess_reranker()
         if provider_class is None:
             available = ", ".join(sorted(cls._PROVIDERS.keys())) if cls._PROVIDERS else "none"
             raise ValueError(

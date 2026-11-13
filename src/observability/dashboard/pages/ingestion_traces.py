@@ -1,4 +1,4 @@
-"""Ingestion Traces page – browse ingestion trace history with per-stage detail.
+"""导入追踪 page – browse ingestion trace history with per-stage detail.
 
 Layout:
 1. Trace list (reverse-chronological, filtered to trace_type=="ingestion")
@@ -24,17 +24,17 @@ logger = logging.getLogger(__name__)
 
 
 def render() -> None:
-    """Render the Ingestion Traces page."""
-    st.header("🔬 Ingestion Traces")
+    """Render the 导入追踪 page."""
+    st.header("🔬 导入追踪")
 
     svc = TraceService()
     traces = svc.list_traces(trace_type="ingestion")
 
     if not traces:
-        st.info("No ingestion traces recorded yet. Run an ingestion first!")
+        st.info("还没有记录到导入 Trace，请先执行一次导入。")
         return
 
-    st.subheader(f"📋 Trace History ({len(traces)})")
+    st.subheader(f"📋 Trace 历史 ({len(traces)})")
 
     for idx, trace in enumerate(traces):
         trace_id = trace.get("trace_id", "unknown")
@@ -53,8 +53,8 @@ def render() -> None:
             stages_by_name = {t["stage_name"]: t for t in timings}
 
             # ── 1. Overview metrics ────────────────────────────
-            st.markdown("#### 📊 Pipeline Overview")
-            st.caption(f"Source: `{source_path}`")
+            st.markdown("#### 📊 流程概览")
+            st.caption(f"来源： `{source_path}`")
 
             load_d = stages_by_name.get("load", {}).get("data", {})
             split_d = stages_by_name.get("split", {}).get("data", {})
@@ -64,15 +64,15 @@ def render() -> None:
 
             c1, c2, c3, c4, c5 = st.columns(5)
             with c1:
-                st.metric("Doc Length", f"{load_d.get('text_length', 0):,} chars")
+                st.metric("文档长度", f"{load_d.get('text_length', 0):,} 字符")
             with c2:
                 st.metric("Chunks", split_d.get("chunk_count", 0))
             with c3:
-                st.metric("Images", load_d.get("image_count", 0))
+                st.metric("图片", load_d.get("image_count", 0))
             with c4:
-                st.metric("Vectors", upsert_d.get("vector_count", 0))
+                st.metric("向量数", upsert_d.get("vector_count", 0))
             with c5:
-                st.metric("Total Time", total_label)
+                st.metric("总耗时", total_label)
 
             st.divider()
 
@@ -83,13 +83,13 @@ def render() -> None:
                 if t["stage_name"] in ("load", "split", "transform", "embed", "upsert")
             ]
             if main_stages:
-                st.markdown("#### ⏱️ Stage Timings")
+                st.markdown("#### ⏱️ 阶段耗时")
                 chart_data = {t["stage_name"]: t["elapsed_ms"] for t in main_stages}
                 st.bar_chart(chart_data, horizontal=True)
                 st.table([
                     {
-                        "Stage": t["stage_name"],
-                        "Elapsed (ms)": round(t["elapsed_ms"], 2),
+                        "阶段": t["stage_name"],
+                        "耗时 (ms)": round(t["elapsed_ms"], 2),
                     }
                     for t in main_stages
                 ])
@@ -100,7 +100,7 @@ def render() -> None:
             st.divider()
 
             # ── 3. Per-stage detail tabs ───────────────────────
-            st.markdown("#### 🔍 Stage Details")
+            st.markdown("#### 🔍 阶段详情")
 
             tab_defs = []
             if "load" in stages_by_name:
@@ -135,7 +135,7 @@ def render() -> None:
                         elif key == "upsert":
                             _render_upsert_stage(data)
             else:
-                st.info("No stage details available.")
+                st.info("当前没有可展示的阶段详情。")
 
 
 def _render_ingestion_diagnostics(
@@ -157,34 +157,34 @@ def _render_ingestion_diagnostics(
         if "load" in missing:
             st.error(
                 f"**Pipeline incomplete — missing stages: {names}.** "
-                "The Load stage failed or was skipped. The document may be corrupted or unsupported."
+                "Load 阶段失败或被跳过，文档可能已损坏或格式暂不支持。"
             )
         else:
             st.warning(
                 f"**Pipeline incomplete — missing stages: {names}.** "
-                "An error may have occurred during processing. Check the logs for details."
+                "处理过程中可能发生了错误，请查看日志了解详情。"
             )
 
     # Stage-specific diagnostics
     if "load" in stages_by_name and load_d.get("text_length", 0) == 0:
-        st.warning("**Load stage produced empty text.** The document may be image-only or in an unsupported format.")
+        st.warning("**Load 阶段生成了空文本。** 该文档可能仅包含图片，或格式暂不支持。")
 
     if "split" in stages_by_name and split_d.get("chunk_count", 0) == 0:
-        st.warning("**Split stage produced 0 chunks.** The document text may be too short or empty.")
+        st.warning("**Split 阶段产出了 0 个 Chunks。** 文档文本可能过短或为空。")
 
     if "transform" in stages_by_name:
         refined_llm = transform_d.get("refined_by_llm", 0)
         refined_rule = transform_d.get("refined_by_rule", 0)
         if refined_llm == 0 and refined_rule == 0:
-            st.info("**Transform:** No chunks were refined. LLM refinement may be disabled or skipped for short chunks.")
+            st.info("**Transform：** 没有任何 Chunk 被 refine，可能是 LLM refinement 未启用，或短文本被跳过。")
 
     if "embed" in stages_by_name and embed_d.get("dense_vector_count", 0) == 0:
-        st.warning("**Embed stage produced 0 vectors.** Embedding API may have failed. Check API key and endpoint.")
+        st.warning("**Embed 阶段产出了 0 个向量。** Embedding API 可能失败了，请检查 API Key 和 endpoint。")
 
     if "upsert" in stages_by_name:
         vec_count = upsert_d.get("vector_count", upsert_d.get("dense_store", {}).get("count", 0))
         if vec_count == 0:
-            st.warning("**Upsert stage stored 0 vectors.** Database write may have failed.")
+            st.warning("**Upsert 阶段写入了 0 个向量。** 数据库写入可能失败。")
 
     # Check for error fields in any stage data
     for stage_name in present:
@@ -192,7 +192,7 @@ def _render_ingestion_diagnostics(
         err = stage_data.get("error", "")
         if err:
             label = stage_name.replace("_", " ").title()
-            st.error(f"**{label} stage error:** {err}")
+            st.error(f"**{label} 阶段错误：** {err}")
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -205,13 +205,13 @@ def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
     with c1:
         st.metric("Doc ID", data.get("doc_id", "—")[:16])
     with c2:
-        st.metric("Text Length", f"{data.get('text_length', 0):,}")
+        st.metric("文本长度", f"{data.get('text_length', 0):,}")
     with c3:
-        st.metric("Images", data.get("image_count", 0))
+        st.metric("图片", data.get("image_count", 0))
 
     preview = data.get("text_preview", "")
     if preview:
-        st.markdown("**Raw Document Text**")
+        st.markdown("**原始文档文本**")
         st.text_area(
             "raw_text",
             value=preview,
@@ -221,7 +221,7 @@ def _render_load_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
             key=f"load_raw_text_{trace_idx}",
         )
     else:
-        st.info("No text preview recorded in this trace.")
+        st.info("这个 Trace 中没有记录文本预览。")
 
 
 def _render_split_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
@@ -230,16 +230,16 @@ def _render_split_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
     with c1:
         st.metric("Chunks", data.get("chunk_count", 0))
     with c2:
-        st.metric("Avg Size", f"{data.get('avg_chunk_size', 0)} chars")
+        st.metric("平均大小", f"{data.get('avg_chunk_size', 0)} 字符")
 
     chunks = data.get("chunks", [])
     if chunks:
-        st.markdown("**Chunks after splitting**")
+        st.markdown("**切分后的 Chunks**")
         for i, chunk in enumerate(chunks):
             char_len = chunk.get("char_len", 0)
             chunk_id = chunk.get("chunk_id", "")
             text = chunk.get("text", "")
-            header = f"📝 **Chunk #{i+1}** — `{chunk_id[:20]}` — {char_len} chars"
+            header = f"📝 **Chunk #{i+1}** — `{chunk_id[:20]}` — {char_len} 字符"
             with st.expander(header, expanded=(i < 2)):
                 st.text_area(
                     f"split_{i}",
@@ -250,7 +250,7 @@ def _render_split_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
                     key=f"split_{trace_idx}_{i}",
                 )
     else:
-        st.info("No chunk text recorded. Re-run ingestion to generate new traces.")
+        st.info("没有记录到 Chunk 文本，请重新执行导入以生成新的 Trace。")
 
 
 def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None:
@@ -259,20 +259,20 @@ def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None
     c1, c2, c3 = st.columns(3)
     with c1:
         st.metric(
-            "Refined (LLM / Rule)",
+            "Refine 数（LLM / Rule）",
             f"{data.get('refined_by_llm', 0)} / {data.get('refined_by_rule', 0)}",
         )
     with c2:
         st.metric(
-            "Enriched (LLM / Rule)",
+            "Enrich 数（LLM / Rule）",
             f"{data.get('enriched_by_llm', 0)} / {data.get('enriched_by_rule', 0)}",
         )
     with c3:
-        st.metric("Captioned", data.get("captioned_chunks", 0))
+        st.metric("Caption 数", data.get("captioned_chunks", 0))
 
     chunks = data.get("chunks", [])
     if chunks:
-        st.markdown("**Per-chunk transform results**")
+        st.markdown("**逐 Chunk 的 Transform 结果**")
         for i, chunk in enumerate(chunks):
             chunk_id = chunk.get("chunk_id", "")
             refined_by = chunk.get("refined_by", "")
@@ -297,45 +297,45 @@ def _render_transform_stage(data: Dict[str, Any], *, trace_idx: int = 0) -> None
                     st.markdown("**Enriched Metadata**")
                     meta_cols = st.columns(3)
                     with meta_cols[0]:
-                        st.markdown(f"**Title:** {title}" if title else "_No title_")
+                        st.markdown(f"**标题：** {title}" if title else "_无标题_")
                     with meta_cols[1]:
                         if tags:
-                            st.markdown("**Tags:** " + ", ".join(f"`{t}`" for t in tags))
+                            st.markdown("**标签：** " + ", ".join(f"`{t}`" for t in tags))
                         else:
-                            st.markdown("_No tags_")
+                            st.markdown("_无标签_")
                     with meta_cols[2]:
                         if summary:
-                            st.markdown(f"**Summary:** {summary}")
+                            st.markdown(f"**摘要：** {summary}")
 
                 # Before / After text comparison
                 if text_before or text_after:
-                    st.markdown("**Text Comparison**")
+                    st.markdown("**文本对比**")
                     # Compute a uniform height so both sides match
                     _max_len = max(len(text_before or ""), len(text_after or ""))
                     _h = max(150, min(_max_len // 2, 600))
                     col_before, col_after = st.columns(2)
                     with col_before:
-                        st.markdown("*Before refinement:*")
+                        st.markdown("*Refine 前：*")
                         st.text_area(
                             f"before_{i}",
-                            value=text_before if text_before else "(empty)",
+                            value=text_before if text_before else "（空）",
                             height=_h,
                             disabled=True,
                             label_visibility="collapsed",
                             key=f"transform_before_{trace_idx}_{i}",
                         )
                     with col_after:
-                        st.markdown("*After refinement + enrichment:*")
+                        st.markdown("*Refine + Enrich 后：*")
                         st.text_area(
                             f"after_{i}",
-                            value=text_after if text_after else "(empty)",
+                            value=text_after if text_after else "（空）",
                             height=_h,
                             disabled=True,
                             label_visibility="collapsed",
                             key=f"transform_after_{trace_idx}_{i}",
                         )
     else:
-        st.info("No per-chunk transform data recorded. Re-run ingestion for new traces.")
+        st.info("没有记录到逐 Chunk 的 Transform 数据，请重新执行导入生成新的 Trace。")
 
 
 def _render_embed_stage(data: Dict[str, Any]) -> None:
@@ -343,7 +343,7 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
     # ── Overview metrics ──
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        st.metric("Dense Vectors", data.get("dense_vector_count", 0))
+        st.metric("Dense 向量数", data.get("dense_vector_count", 0))
     with c2:
         st.metric("Dimension", data.get("dense_dimension", 0))
     with c3:
@@ -353,7 +353,7 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
 
     chunks = data.get("chunks", [])
     if not chunks:
-        st.info("No chunk encoding data recorded.")
+        st.info("没有记录到 Chunk 编码数据。")
         return
 
     # ── Dual-path per-chunk table ──
@@ -368,8 +368,8 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
             dense_rows.append({
                 "#": i + 1,
                 "Chunk ID": chunk.get("chunk_id", ""),
-                "Chars": char_len,
-                "Est. Tokens": max(1, char_len // 3),
+                "字符数": char_len,
+                "预估 Tokens": max(1, char_len // 3),
                 "Dense Dim": chunk.get("dense_dim", data.get("dense_dimension", "—")),
             })
         st.table(dense_rows)
@@ -381,7 +381,7 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
             sparse_rows.append({
                 "#": i + 1,
                 "Chunk ID": chunk.get("chunk_id", ""),
-                "Doc Length (terms)": chunk.get("doc_length", "—"),
+                "文档长度 (terms)": chunk.get("doc_length", "—"),
                 "Unique Terms": chunk.get("unique_terms", "—"),
             })
         st.table(sparse_rows)
@@ -390,7 +390,7 @@ def _render_embed_stage(data: Dict[str, Any]) -> None:
         for i, chunk in enumerate(chunks):
             top_terms = chunk.get("top_terms", [])
             if top_terms:
-                with st.expander(f"🔤 Chunk {i + 1} — Top Terms", expanded=False):
+                with st.expander(f"🔤 Chunk {i + 1} — 高频 Terms", expanded=False):
                     term_rows = [{"Term": t["term"], "Freq": t["freq"]} for t in top_terms]
                     st.table(term_rows)
 
@@ -404,11 +404,11 @@ def _render_upsert_stage(data: Dict[str, Any]) -> None:
     # ── Overview metrics ──
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.metric("Dense Vectors", dense_store.get("count", data.get("vector_count", 0)))
+        st.metric("Dense 向量数", dense_store.get("count", data.get("vector_count", 0)))
     with c2:
         st.metric("Sparse (BM25)", sparse_store.get("count", data.get("bm25_docs", 0)))
     with c3:
-        st.metric("Images", image_store.get("count", data.get("images_indexed", 0)))
+        st.metric("图片", image_store.get("count", data.get("images_indexed", 0)))
 
     # ── Dense store details ──
     if dense_store:
@@ -419,7 +419,7 @@ def _render_upsert_stage(data: Dict[str, Any]) -> None:
                 st.markdown(f"**Collection:** `{dense_store.get('collection', '—')}`")
             with dc2:
                 st.markdown(f"**Path:** `{dense_store.get('path', '—')}`")
-                st.markdown(f"**Vectors:** {dense_store.get('count', 0)}")
+                st.markdown(f"**向量数:** {dense_store.get('count', 0)}")
 
     # ── Sparse store details ──
     if sparse_store:
@@ -434,15 +434,15 @@ def _render_upsert_stage(data: Dict[str, Any]) -> None:
 
     # ── Image store details ──
     if image_store and image_store.get("count", 0) > 0:
-        with st.expander(f"🖼️ Image Storage ({image_store.get('count', 0)} images)", expanded=True):
+        with st.expander(f"🖼️ 图片存储 ({image_store.get('count', 0)} 张图片)", expanded=True):
             st.markdown(f"**Backend:** `{image_store.get('backend', '—')}`")
             imgs = image_store.get("images", [])
             if imgs:
                 img_rows = [
                     {
                         "Image ID": img.get("image_id", ""),
-                        "Page": img.get("page", 0),
-                        "File": img.get("file_path", ""),
+                        "页码": img.get("page", 0),
+                        "文件": img.get("file_path", ""),
                         "Doc Hash": img.get("doc_hash", "")[:16] + "…",
                     }
                     for img in imgs
@@ -452,7 +452,7 @@ def _render_upsert_stage(data: Dict[str, Any]) -> None:
     # ── Chunk → Vector ID mapping ──
     chunk_mapping = data.get("chunk_mapping", [])
     if chunk_mapping:
-        with st.expander(f"🔗 Chunk → Vector Mapping ({len(chunk_mapping)} entries)", expanded=False):
+        with st.expander(f"🔗 Chunk → Vector Mapping ({len(chunk_mapping)} 条记录)", expanded=False):
             mapping_rows = [
                 {
                     "#": i + 1,

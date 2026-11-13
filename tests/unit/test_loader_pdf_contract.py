@@ -11,12 +11,14 @@ Note: Additional integration tests are in tests/integration/test_pdf_loader_inte
 """
 
 from pathlib import Path
+import json
 
 import pytest
 
 from src.core.types import Document
 from src.libs.loader.base_loader import BaseLoader
 from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.pdf_parsers import PdfParseResult
 
 
 # Test fixtures paths
@@ -76,6 +78,68 @@ class TestPdfLoaderInitialization:
         """PdfLoader requires MarkItDown to be available."""
         loader = PdfLoader()
         assert loader._markitdown is not None
+
+    def test_custom_parser_can_be_injected(self, tmp_path):
+        """PdfLoader delegates text parsing to the configured parser."""
+        pdf_file = tmp_path / "test.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+
+        class StubParser:
+            provider_name = "stub"
+
+            def parse(self, file_path):
+                assert Path(file_path) == pdf_file
+                return PdfParseResult(
+                    text="# Stub Title\n\nParsed text.",
+                    parser_provider=self.provider_name,
+                )
+
+        loader = PdfLoader(extract_images=False, parser=StubParser())
+        doc = loader.load(pdf_file)
+
+        assert doc.text == "# Stub Title\n\nParsed text."
+        assert doc.metadata["title"] == "Stub Title"
+        assert doc.metadata["parser_provider"] == "stub"
+        assert "parse_quality_score" in doc.metadata
+        assert "parse_quality_reasons" in doc.metadata
+        assert "parse_quality_metrics" in doc.metadata
+        assert "should_use_external_pdf_api" in doc.metadata
+
+    def test_parse_report_is_written_when_enabled(self, tmp_path):
+        """PdfLoader writes an audit report when parse_report_dir is configured."""
+        pdf_file = tmp_path / "test.pdf"
+        pdf_file.write_bytes(b"%PDF-1.4\n")
+
+        class StubParser:
+            provider_name = "stub"
+
+            def parse(self, file_path):
+                return PdfParseResult(
+                    text="# Reported PDF\n\nParsed text.",
+                    parser_provider=self.provider_name,
+                    metadata={
+                        "parser_route": "composite",
+                        "fallback_used": True,
+                        "fallback_provider": "mineru",
+                    },
+                )
+
+        report_dir = tmp_path / "reports"
+        loader = PdfLoader(
+            extract_images=False,
+            parser=StubParser(),
+            parse_report_dir=report_dir,
+        )
+        doc = loader.load(pdf_file)
+
+        report_path = Path(doc.metadata["parse_report_path"])
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        assert report_path.parent == report_dir
+        assert report["doc_id"] == doc.id
+        assert report["parser_provider"] == "stub"
+        assert report["parser_route"] == "composite"
+        assert report["fallback_used"] is True
 
 
 class TestPdfLoaderValidation:
@@ -182,6 +246,9 @@ class TestPdfConversionCore:
         # Verify metadata
         assert doc.metadata["source_path"] == str(SIMPLE_PDF)
         assert doc.metadata["doc_type"] == "pdf"
+        assert doc.metadata["parser_provider"] == "markitdown"
+        assert isinstance(doc.metadata["parse_quality_score"], float)
+        assert isinstance(doc.metadata["parse_quality_reasons"], list)
         assert "doc_hash" in doc.metadata
     
     def test_extract_title_from_pdf(self):

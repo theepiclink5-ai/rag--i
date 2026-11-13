@@ -143,7 +143,7 @@ class CoreReranker:
                 enabled=bool(rerank_settings.enabled) if rerank_settings else False,
                 top_k=int(rerank_settings.top_k) if rerank_settings and hasattr(rerank_settings, 'top_k') else 5,
                 timeout=float(getattr(rerank_settings, 'timeout', 30.0)) if rerank_settings else 30.0,
-                fallback_on_error=True,
+                fallback_on_error=bool(getattr(rerank_settings, 'fallback_on_error', True)),
             )
         except AttributeError:
             logger.warning("Missing rerank configuration, using defaults (disabled)")
@@ -158,6 +158,8 @@ class CoreReranker:
         class_name = self._reranker.__class__.__name__
         if "LLM" in class_name:
             return "llm"
+        elif "Jina" in class_name:
+            return "jina"
         elif "CrossEncoder" in class_name:
             return "cross_encoder"
         elif "None" in class_name:
@@ -289,6 +291,7 @@ class CoreReranker:
                 query=query,
                 candidates=candidates,
                 trace=trace,
+                top_k=effective_top_k,
                 **kwargs,
             )
             _elapsed = (time.monotonic() - _t0) * 1000.0

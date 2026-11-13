@@ -1,4 +1,9 @@
 #!/usr/bin/env python
+__import__("pysqlite3")
+import sys
+sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
+
+
 """Ingestion script for the Modular RAG MCP Server.
 
 This script provides a command-line interface for ingesting documents into

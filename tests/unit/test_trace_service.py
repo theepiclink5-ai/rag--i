@@ -97,6 +97,50 @@ class TestTraceService:
         assert timings[0]["elapsed_ms"] == 20.0
         assert timings[0]["data"]["method"] == "pdf"
 
+    def test_latency_breakdown_uses_parallel_retrieval_critical_path(self, tmp_path):
+        svc = TraceService(tmp_path / "unused.jsonl")
+        trace = {
+            "total_elapsed_ms": 100_000,
+            "metadata": {"answer_ready_elapsed_ms": 30_000},
+            "stages": [
+                {"stage": "reranker_startup", "elapsed_ms": 18_000},
+                {"stage": "query_processing", "elapsed_ms": 500},
+                {"stage": "dense_retrieval", "elapsed_ms": 1_000},
+                {"stage": "sparse_retrieval", "elapsed_ms": 400},
+                {"stage": "rerank", "elapsed_ms": 7_000},
+                {"stage": "llm_generation", "elapsed_ms": 2_500},
+                {"stage": "ragas_evaluation", "elapsed_ms": 70_000},
+            ],
+        }
+
+        result = svc.get_latency_breakdown(trace)
+
+        assert result["answer_ready_ms"] == 30_000
+        assert result["evaluation_ms"] == 70_000
+        assert result["retrieval_wall_ms"] == 1_000
+        assert result["other_answer_ms"] == 1_000
+
+    def test_latency_breakdown_estimates_old_trace_from_stage_timestamp(self, tmp_path):
+        svc = TraceService(tmp_path / "unused.jsonl")
+        trace = {
+            "started_at": "2025-01-01T00:00:00+00:00",
+            "total_elapsed_ms": 12_000,
+            "metadata": {},
+            "stages": [
+                {
+                    "stage": "llm_generation",
+                    "timestamp": "2025-01-01T00:00:10+00:00",
+                    "elapsed_ms": 2_000,
+                },
+                {"stage": "ragas_evaluation", "elapsed_ms": 2_000},
+            ],
+        }
+
+        result = svc.get_latency_breakdown(trace)
+
+        assert result["answer_ready_ms"] == 10_000
+        assert result["evaluation_ms"] == 2_000
+
     def test_empty_file(self, tmp_path):
         p = tmp_path / "empty.jsonl"
         p.touch()

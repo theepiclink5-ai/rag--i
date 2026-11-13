@@ -1,4 +1,4 @@
-"""Factory for creating Embedding provider instances.
+﻿"""Factory for creating Embedding provider instances.
 
 This module implements the Factory Pattern to instantiate the appropriate
 Embedding provider based on configuration, enabling configuration-driven selection
@@ -129,6 +129,12 @@ def _register_builtin_providers() -> None:
         EmbeddingFactory.register_provider("ollama", OllamaEmbedding)
     except ImportError:
         pass  # Ollama provider not available
+
+    try:
+        from src.libs.embedding.jina_embedding import JinaEmbedding
+        EmbeddingFactory.register_provider("jina", JinaEmbedding)
+    except ImportError:
+        pass  # Jina provider not available
 
 
 # Register providers when module is imported

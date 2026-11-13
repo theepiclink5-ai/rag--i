@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.libs.evaluator.base_evaluator import BaseEvaluator, NoneEvaluator
 from src.libs.evaluator.custom_evaluator import CustomEvaluator
+from src.libs.evaluator.correctness_evaluator import CorrectnessEvaluator
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -39,6 +40,7 @@ class EvaluatorFactory:
 
     _PROVIDERS: dict[str, type[BaseEvaluator]] = {
         "custom": CustomEvaluator,
+        "correctness": CorrectnessEvaluator,
     }
 
     # Lazy-loaded providers (import on demand to avoid hard dependencies)

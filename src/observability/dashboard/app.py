@@ -1,18 +1,13 @@
-"""Modular RAG Dashboard – multi-page Streamlit application.
-
-Entry-point: ``streamlit run src/observability/dashboard/app.py``
-
-Pages are registered via ``st.navigation()`` and rendered by their
-respective modules under ``pages/``.  Pages not yet implemented show
-a placeholder message.
-"""
-
+"""Modular RAG Dashboard - multi-page Streamlit application."""
 from __future__ import annotations
+import sys
 
+# Patch sqlite3 for ChromaDB compatibility (requires >= 3.35.0)
+__import__("pysqlite3")
+sys.modules["sqlite3"] = sys.modules.pop("pysqlite3")
 import streamlit as st
 
 
-# ── Page definitions ─────────────────────────────────────────────────
 
 def _page_overview() -> None:
     from src.observability.dashboard.pages.overview import render
@@ -44,21 +39,19 @@ def _page_evaluation_panel() -> None:
     render()
 
 
-# ── Navigation ───────────────────────────────────────────────────────
-
 pages = [
-    st.Page(_page_overview, title="Overview", icon="📊", default=True),
-    st.Page(_page_data_browser, title="Data Browser", icon="🔍"),
-    st.Page(_page_ingestion_manager, title="Ingestion Manager", icon="📥"),
-    st.Page(_page_ingestion_traces, title="Ingestion Traces", icon="🔬"),
-    st.Page(_page_query_traces, title="Query Traces", icon="🔎"),
-    st.Page(_page_evaluation_panel, title="Evaluation Panel", icon="📏"),
+    st.Page(_page_overview, title="系统概览", icon="📊", default=True),
+    st.Page(_page_data_browser, title="数据浏览", icon="🔍"),
+    st.Page(_page_ingestion_manager, title="导入管理", icon="📥"),
+    st.Page(_page_ingestion_traces, title="导入追踪", icon="🔬"),
+    st.Page(_page_query_traces, title="查询追踪", icon="🔎"),
+    st.Page(_page_evaluation_panel, title="评估面板", icon="📏"),
 ]
 
 
 def main() -> None:
     st.set_page_config(
-        page_title="Modular RAG Dashboard",
+        page_title="模块化 RAG 控制台",
         page_icon="📊",
         layout="wide",
     )
@@ -70,5 +63,4 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 else:
-    # When run directly via `streamlit run app.py`
     main()

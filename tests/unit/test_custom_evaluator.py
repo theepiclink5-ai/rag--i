@@ -36,6 +36,19 @@ class TestCustomEvaluator:
         assert metrics["hit_rate"] == 0.0
         assert metrics["mrr"] == 0.0
 
+    def test_hit_rate_and_mrr_with_expected_sources(self) -> None:
+        evaluator = CustomEvaluator(metrics=["hit_rate", "mrr"])
+        retrieved = [
+            {"id": "c1", "metadata": {"source_path": "docs/other.md"}},
+            {"id": "c2", "metadata": {"source_path": "docs/01_speaker_products.md"}},
+        ]
+        ground_truth = {"sources": ["01_speaker_products.md"]}
+
+        metrics = evaluator.evaluate("query", retrieved, ground_truth=ground_truth)
+
+        assert metrics["hit_rate"] == 1.0
+        assert metrics["mrr"] == 0.5
+
     def test_validate_query_and_retrieved(self) -> None:
         evaluator = CustomEvaluator(metrics=["hit_rate"])
 

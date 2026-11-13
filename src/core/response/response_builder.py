@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Union
 from mcp import types
 
 from src.core.response.citation_generator import Citation, CitationGenerator
+from src.core.response.prompt_config import RagAnswerPrompt
 from src.core.types import RetrievalResult
 
 
@@ -120,8 +121,9 @@ class ResponseBuilder:
         citation_generator: Optional[CitationGenerator] = None,
         multimodal_assembler: Optional["MultimodalAssembler"] = None,
         max_results_in_content: int = 5,
-        snippet_max_length: int = 300,
+        snippet_max_length: int = 1200,
         enable_multimodal: bool = True,
+        answer_prompt: Optional[RagAnswerPrompt] = None,
     ) -> None:
         """Initialize ResponseBuilder.
         
@@ -138,6 +140,7 @@ class ResponseBuilder:
         self.max_results_in_content = max_results_in_content
         self.snippet_max_length = snippet_max_length
         self.enable_multimodal = enable_multimodal
+        self.answer_prompt = answer_prompt or RagAnswerPrompt.load()
         
         # Lazy-load multimodal assembler to avoid circular imports
         self._multimodal_assembler = multimodal_assembler
@@ -156,6 +159,7 @@ class ResponseBuilder:
         query: str,
         collection: Optional[str] = None,
         include_images: bool = True,
+        evidence_status: Optional[str] = None,
     ) -> MCPToolResponse:
         """Build MCP response from retrieval results.
         
@@ -177,9 +181,19 @@ class ResponseBuilder:
         
         # Build Markdown content
         content = self._build_markdown_content(results, citations, query)
+        if evidence_status:
+            content = f"{self.answer_prompt.evidence_preamble}\n\n{content}"
         
         # Build metadata
         metadata = self._build_metadata(query, collection, len(results))
+        if evidence_status:
+            metadata.update({
+                "answerable": True,
+                "citation_required": True,
+                "evidence_status": evidence_status,
+                "allowed_citations": list(range(1, len(citations) + 1)),
+                **self.answer_prompt.metadata(),
+            })
         
         # Assemble image content if enabled
         image_contents: List[types.ImageContent] = []
@@ -200,6 +214,33 @@ class ResponseBuilder:
             metadata=metadata,
             is_empty=False,
             image_contents=image_contents,
+        )
+
+    def build_insufficient_evidence(
+        self,
+        query: str,
+        collection: Optional[str] = None,
+        reason: str = "",
+        top_score: Optional[float] = None,
+    ) -> MCPToolResponse:
+        """Build a refusal response when retrieved text cannot support an answer."""
+        content = self.answer_prompt.build_insufficient_evidence(query)
+        metadata = self._build_metadata(query, collection, 0)
+        metadata.update({
+            "answerable": False,
+            "citation_required": True,
+            "evidence_status": "no_evidence",
+            "allowed_citations": [],
+            "reason": reason,
+            **self.answer_prompt.metadata(),
+        })
+        if top_score is not None:
+            metadata["top_rerank_score"] = round(top_score, 6)
+        return MCPToolResponse(
+            content=content,
+            citations=[],
+            metadata=metadata,
+            is_empty=True,
         )
     
     def _build_empty_response(

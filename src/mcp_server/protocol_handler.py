@@ -198,6 +198,14 @@ def _register_default_tools(protocol_handler: ProtocolHandler) -> None:
     # Import and register query_knowledge_hub tool
     from src.mcp_server.tools.query_knowledge_hub import register_tool as register_query_tool
     register_query_tool(protocol_handler)
+
+    # Register the end-to-end grounded answer tool
+    from src.mcp_server.tools.ask_knowledge_hub import register_tool as register_ask_tool
+    register_ask_tool(protocol_handler)
+
+    # Register the opt-in answer + detailed evaluation route
+    from src.mcp_server.tools.evaluate_knowledge_hub import register_tool as register_evaluate_tool
+    register_evaluate_tool(protocol_handler)
     
     # Import and register list_collections tool
     from src.mcp_server.tools.list_collections import register_tool as register_list_tool

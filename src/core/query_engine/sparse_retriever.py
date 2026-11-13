@@ -197,10 +197,13 @@ class SparseRetriever:
             raise ValueError(
                 f"Keywords must be a list, got {type(keywords).__name__}"
             )
-        if not keywords:
-            raise ValueError("Keywords list cannot be empty")
-        # Filter out empty strings but allow the call to proceed
-        # (empty strings will simply not match anything)
+        # Filter out empty/whitespace-only strings
+        filtered = [k.strip() for k in keywords if isinstance(k, str) and k.strip()]
+        if not filtered:
+            raise ValueError("Keywords list cannot be empty after filtering blank entries")
+        # Mutate in-place so caller sees cleaned list
+        keywords.clear()
+        keywords.extend(filtered)
     
     def _validate_dependencies(self) -> None:
         """Validate that required dependencies are configured.

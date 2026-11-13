@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -35,6 +37,42 @@ def resolve_path(relative: Union[str, Path]) -> Path:
 
 class SettingsError(ValueError):
     """Raised when settings validation fails."""
+
+
+_ENV_PATTERN = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _load_dotenv_file(path: Path) -> None:
+    """Load KEY=VALUE pairs from a local .env file without overriding env vars."""
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+def _expand_env_placeholders(value: Any) -> Any:
+    """Recursively expand ${ENV_VAR} placeholders in loaded YAML values."""
+    if isinstance(value, dict):
+        return {key: _expand_env_placeholders(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_expand_env_placeholders(item) for item in value]
+    if not isinstance(value, str):
+        return value
+
+    full_match = _ENV_PATTERN.fullmatch(value.strip())
+    if full_match:
+        return os.environ.get(full_match.group(1))
+
+    return _ENV_PATTERN.sub(lambda match: os.environ.get(match.group(1), ""), value)
 
 
 def _require_mapping(data: Dict[str, Any], key: str, path: str) -> Dict[str, Any]:
@@ -84,6 +122,36 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     value = _require_value(data, key, path)
     if not isinstance(value, list):
         raise SettingsError(f"Expected list for field: {path}.{key}")
+    return value
+
+
+def _optional_int(data: Dict[str, Any], key: str, path: str, default: int) -> int:
+    value = data.get(key, default)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise SettingsError(f"Expected integer for field: {path}.{key}")
+    return value
+
+
+def _optional_number(
+    data: Dict[str, Any], key: str, path: str, default: float
+) -> float:
+    value = data.get(key, default)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise SettingsError(f"Expected number for field: {path}.{key}")
+    return float(value)
+
+
+def _optional_bool(data: Dict[str, Any], key: str, path: str, default: bool) -> bool:
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise SettingsError(f"Expected boolean for field: {path}.{key}")
+    return value
+
+
+def _optional_str(data: Dict[str, Any], key: str, path: str, default: str) -> str:
+    value = data.get(key, default)
+    if not isinstance(value, str) or not value.strip():
+        raise SettingsError(f"Expected non-empty string for field: {path}.{key}")
     return value
 
 
@@ -137,6 +205,28 @@ class RerankSettings:
     provider: str
     model: str
     top_k: int
+    candidate_top_k: int = 20
+    timeout: float = 15.0
+    batch_size: int = 16
+    max_length: int = 512
+    fallback_on_error: bool = True
+    cache_dir: str = "./data/models/huggingface/hub"
+    execution_mode: str = "in_process"
+    startup_timeout: float = 60.0
+    local_files_only: bool = False
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    max_retries: int = 2
+    retry_base_delay: float = 0.5
+
+
+@dataclass(frozen=True)
+class CitationGuardSettings:
+    enabled: bool = True
+    min_text_length: int = 30
+    strong_score_threshold: float = 0.60
+    weak_score_threshold: float = 0.20
+    min_strong_evidence: int = 1
 
 
 @dataclass(frozen=True)
@@ -178,6 +268,28 @@ class IngestionSettings:
 
 
 @dataclass(frozen=True)
+class MinerUPdfParserSettings:
+    api_key: Optional[str] = None
+    model_version: str = "vlm"
+    language: str = "ch"
+    is_ocr: bool = True
+    enable_table: bool = True
+    enable_formula: bool = True
+    timeout_seconds: int = 600
+    poll_interval_seconds: int = 5
+    save_raw_result: bool = True
+
+
+@dataclass(frozen=True)
+class PdfParserSettings:
+    primary: str
+    fallback_enabled: bool
+    fallback_provider: str
+    fallback_threshold: float
+    mineru: Optional[MinerUPdfParserSettings] = None
+
+
+@dataclass(frozen=True)
 class Settings:
     llm: LLMSettings
     embedding: EmbeddingSettings
@@ -188,6 +300,8 @@ class Settings:
     observability: ObservabilitySettings
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
+    pdf_parser: Optional[PdfParserSettings] = None
+    citation_guard: Optional[CitationGuardSettings] = None
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -202,6 +316,36 @@ class Settings:
         evaluation = _require_mapping(data, "evaluation", "settings")
         observability = _require_mapping(data, "observability", "settings")
 
+        citation_guard_settings = None
+        if "citation_guard" in data:
+            citation_guard = _require_mapping(data, "citation_guard", "settings")
+            citation_guard_settings = CitationGuardSettings(
+                enabled=_optional_bool(
+                    citation_guard, "enabled", "citation_guard", True
+                ),
+                min_text_length=_optional_int(
+                    citation_guard, "min_text_length", "citation_guard", 30
+                ),
+                strong_score_threshold=_optional_number(
+                    citation_guard,
+                    "strong_score_threshold",
+                    "citation_guard",
+                    0.60,
+                ),
+                weak_score_threshold=_optional_number(
+                    citation_guard,
+                    "weak_score_threshold",
+                    "citation_guard",
+                    0.20,
+                ),
+                min_strong_evidence=_optional_int(
+                    citation_guard,
+                    "min_strong_evidence",
+                    "citation_guard",
+                    1,
+                ),
+            )
+
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
@@ -212,6 +356,37 @@ class Settings:
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
+            )
+
+        pdf_parser_settings = None
+        if "pdf_parser" in data:
+            pdf_parser = _require_mapping(data, "pdf_parser", "settings")
+            mineru_settings = None
+            if "mineru" in pdf_parser:
+                mineru = _require_mapping(pdf_parser, "mineru", "pdf_parser")
+                mineru_settings = MinerUPdfParserSettings(
+                    api_key=mineru.get("api_key"),
+                    model_version=str(mineru.get("model_version", "vlm")),
+                    language=str(mineru.get("language", "ch")),
+                    is_ocr=bool(mineru.get("is_ocr", True)),
+                    enable_table=bool(mineru.get("enable_table", True)),
+                    enable_formula=bool(mineru.get("enable_formula", True)),
+                    timeout_seconds=int(mineru.get("timeout_seconds", 600)),
+                    poll_interval_seconds=int(mineru.get("poll_interval_seconds", 5)),
+                    save_raw_result=bool(mineru.get("save_raw_result", True)),
+                )
+            pdf_parser_settings = PdfParserSettings(
+                primary=_require_str(pdf_parser, "primary", "pdf_parser"),
+                fallback_enabled=_require_bool(
+                    pdf_parser, "fallback_enabled", "pdf_parser"
+                ),
+                fallback_provider=_require_str(
+                    pdf_parser, "fallback_provider", "pdf_parser"
+                ),
+                fallback_threshold=_require_number(
+                    pdf_parser, "fallback_threshold", "pdf_parser"
+                ),
+                mineru=mineru_settings,
             )
 
         vision_llm_settings = None
@@ -267,6 +442,36 @@ class Settings:
                 provider=_require_str(rerank, "provider", "rerank"),
                 model=_require_str(rerank, "model", "rerank"),
                 top_k=_require_int(rerank, "top_k", "rerank"),
+                candidate_top_k=_optional_int(
+                    rerank, "candidate_top_k", "rerank", 20
+                ),
+                timeout=_optional_number(rerank, "timeout", "rerank", 15.0),
+                batch_size=_optional_int(rerank, "batch_size", "rerank", 16),
+                max_length=_optional_int(rerank, "max_length", "rerank", 512),
+                fallback_on_error=_optional_bool(
+                    rerank, "fallback_on_error", "rerank", True
+                ),
+                execution_mode=_optional_str(
+                    rerank, "execution_mode", "rerank", "in_process"
+                ),
+                startup_timeout=_optional_number(
+                    rerank, "startup_timeout", "rerank", 60.0
+                ),
+                local_files_only=_optional_bool(
+                    rerank, "local_files_only", "rerank", False
+                ),
+                cache_dir=_optional_str(
+                    rerank,
+                    "cache_dir",
+                    "rerank",
+                    "./data/models/huggingface/hub",
+                ),
+                api_key=rerank.get("api_key"),
+                base_url=rerank.get("base_url"),
+                max_retries=_optional_int(rerank, "max_retries", "rerank", 2),
+                retry_base_delay=_optional_number(
+                    rerank, "retry_base_delay", "rerank", 0.5
+                ),
             ),
             evaluation=EvaluationSettings(
                 enabled=_require_bool(evaluation, "enabled", "evaluation"),
@@ -281,6 +486,8 @@ class Settings:
             ),
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
+            pdf_parser=pdf_parser_settings,
+            citation_guard=citation_guard_settings,
         )
 
         return settings
@@ -299,6 +506,36 @@ def validate_settings(settings: Settings) -> None:
         raise SettingsError("Missing required field: retrieval.rrf_k")
     if not settings.rerank.provider:
         raise SettingsError("Missing required field: rerank.provider")
+    if settings.rerank.top_k < 1:
+        raise SettingsError("rerank.top_k must be greater than zero")
+    if settings.rerank.candidate_top_k < settings.rerank.top_k:
+        raise SettingsError("rerank.candidate_top_k must be >= rerank.top_k")
+    if settings.rerank.timeout <= 0:
+        raise SettingsError("rerank.timeout must be greater than zero")
+    if settings.rerank.batch_size < 1:
+        raise SettingsError("rerank.batch_size must be greater than zero")
+    if settings.rerank.max_length < 1:
+        raise SettingsError("rerank.max_length must be greater than zero")
+    if settings.citation_guard is not None:
+        guard = settings.citation_guard
+        if guard.min_text_length < 1:
+            raise SettingsError("citation_guard.min_text_length must be positive")
+        if not 0 <= guard.weak_score_threshold <= 1:
+            raise SettingsError(
+                "citation_guard.weak_score_threshold must be between 0 and 1"
+            )
+        if not 0 <= guard.strong_score_threshold <= 1:
+            raise SettingsError(
+                "citation_guard.strong_score_threshold must be between 0 and 1"
+            )
+        if guard.strong_score_threshold < guard.weak_score_threshold:
+            raise SettingsError(
+                "citation_guard.strong_score_threshold must be >= weak_score_threshold"
+            )
+        if guard.min_strong_evidence < 1:
+            raise SettingsError(
+                "citation_guard.min_strong_evidence must be positive"
+            )
     if not settings.evaluation.provider:
         raise SettingsError("Missing required field: evaluation.provider")
     if not settings.observability.log_level:
@@ -318,9 +555,12 @@ def load_settings(path: str | Path | None = None) -> Settings:
     if not settings_path.exists():
         raise SettingsError(f"Settings file not found: {settings_path}")
 
+    _load_dotenv_file(REPO_ROOT / ".env")
+
     with settings_path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
 
+    data = _expand_env_placeholders(data or {})
     settings = Settings.from_dict(data or {})
     validate_settings(settings)
     return settings

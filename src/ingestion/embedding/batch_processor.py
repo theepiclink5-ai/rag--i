@@ -183,7 +183,7 @@ class BatchProcessor:
                     }
                 )
         
-        total_time = time.time() - start_time
+        total_time = max(time.time() - start_time, 0.000001)
         
         # Record overall processing statistics
         if trace:
@@ -198,7 +198,7 @@ class BatchProcessor:
                     "total_time_seconds": total_time
                 }
             )
-        
+
         return BatchResult(
             dense_vectors=dense_vectors,
             sparse_stats=sparse_stats,

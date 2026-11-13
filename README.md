@@ -122,6 +122,42 @@ Agent 会自动引导你完成全部配置流程。
 
 > 💡 如果不熟悉 Skill 的使用方式，请观看配套笔记中的 **Setup Skill 使用讲解视频**。
 
+### 3. MCP 连接方式
+
+项目同时保留两种 MCP 传输方式：
+
+- `stdio`：由同一台电脑上的 Agent 启动项目子进程。
+- `Streamable HTTP`：项目作为常驻服务运行，可供同机、局域网或云端 Agent 连接。
+
+本机启动 Streamable HTTP：
+
+```bash
+python scripts/start_mcp_http.py --host 127.0.0.1 --port 8000
+```
+
+MCP 地址为 `http://127.0.0.1:8000/mcp`，健康检查地址为
+`http://127.0.0.1:8000/health`。可以使用项目自带客户端验证：
+
+```bash
+python scripts/verify_mcp_http.py --url http://127.0.0.1:8000/mcp
+```
+
+局域网或云端监听默认要求 Bearer Token：
+
+```bash
+export MCP_HTTP_BEARER_TOKEN="replace-with-a-long-random-token"
+python scripts/start_mcp_http.py \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --allowed-host rag.example.com
+```
+
+PowerShell 使用 `$env:MCP_HTTP_BEARER_TOKEN = "replace-with-a-long-random-token"`
+设置同一个环境变量。
+
+客户端请求必须携带 `Authorization: Bearer <token>`。正式公网部署还应在服务前配置
+HTTPS 反向代理、限流和防火墙，不应直接暴露未加密的 `8000` 端口。
+
 ---
 
 ## 🎯 谁适合用这个项目 & 怎么用

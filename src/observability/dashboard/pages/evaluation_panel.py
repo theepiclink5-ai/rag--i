@@ -1,7 +1,7 @@
-"""Evaluation Panel page – run evaluations and view metrics.
+"""评估面板 page – run evaluations and view metrics.
 
 Layout:
-1. Configuration section: select evaluator backend, golden test set, top_k
+1. 配置 section: select evaluator backend, golden test set, top_k
 2. Run button with progress indicator
 3. Results section: aggregate metrics, per-query detail table
 4. Optional: historical evaluation results comparison
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -19,40 +20,73 @@ import streamlit as st
 
 logger = logging.getLogger(__name__)
 
+try:
+    from src.observability.dashboard.services.data_service import DataService
+except ImportError:
+    DataService = None  # type: ignore[assignment,misc]
+
 # Default golden test set location
 DEFAULT_GOLDEN_SET = Path("tests/fixtures/golden_test_set.json")
 # Evaluation results history file
 EVAL_HISTORY_PATH = Path("logs/eval_history.jsonl")
+RAGAS_SAMPLE_PATH = Path("logs/ragas_sample_10.json")
 
+METRIC_LABELS = {
+    "hit_rate": "命中率@5",
+    "mrr": "平均倒数排名",
+    "context_precision": "上下文精确率",
+    "context_recall": "上下文召回率",
+    "faithfulness": "忠实度",
+    "answer_relevancy": "答案相关性",
+    "answer_correctness": "答案正确性",
+    "answer_correctness_verdict": "答案正确性判定",
+    "refusal_accuracy": "拒答准确率",
+    "p95_latency": "P95 总延迟",
+}
+
+METRIC_ENGLISH = {
+    "hit_rate": "Hit Rate@5",
+    "mrr": "MRR",
+    "context_precision": "Context Precision",
+    "context_recall": "Context Recall",
+    "faithfulness": "Faithfulness",
+    "answer_relevancy": "Answer Relevancy",
+    "answer_correctness": "Answer Correctness",
+    "answer_correctness_verdict": "Correctness Verdict",
+    "refusal_accuracy": "Refusal Accuracy",
+    "p95_latency": "P95 Total Latency",
+}
 
 def render() -> None:
-    """Render the Evaluation Panel page."""
-    st.header("📏 Evaluation Panel")
+    """Render the 评估面板 page."""
+    st.header("📏 评估面板")
     st.markdown(
-        "Run evaluation against a **golden test set** to measure retrieval "
-        "and generation quality. Results include per-query details and "
-        "aggregate metrics."
+        "\u57fa\u4e8e **golden test set** \u8fd0\u884c\u8bc4\u4f30\uff0c\u7528\u4e8e\u5ea6\u91cf\u68c0\u7d22 "
+        "\u4e0e\u751f\u6210\u8d28\u91cf\u3002\u7ed3\u679c\u5305\u542b\u5355\u6761 Query \u660e\u7ec6\u4ee5\u53ca "
+        "\u805a\u5408\u6307\u6807\u3002"
     )
 
-    # ── Configuration Section ──────────────────────────────────────
-    st.subheader("⚙️ Configuration")
+    _render_quality_overview()
+
+    # ── 配置 Section ──────────────────────────────────────
+    st.subheader("⚙️ 配置")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         backend = st.selectbox(
-            "Evaluator Backend",
+            "\u8bc4\u4f30\u540e\u7aef",
             options=["custom", "ragas", "composite"],
             index=0,
             key="eval_backend",
-            help="Select which evaluator backend to use.",
+            help="选择要使用的 evaluator backend。",
         )
 
     # Show info/warning based on selected backend
     if backend in ("custom", "composite"):
         st.info(
             "ℹ️ **Custom Evaluator** 尚未完成数据集准备，当前仅为预留接口。"
-            "Custom Evaluator 需要在 Golden Test Set 中填写 `expected_chunk_ids` "
+            "Custom Evaluator 需要在 Golden Test Set 中填写 `expected_chunk_ids` 或 `expected_sources` "
             "作为 ground truth 才能计算 hit_rate / MRR 指标。"
             "目前建议使用 **ragas** 后端进行评估。",
             icon="🚧",
@@ -65,84 +99,139 @@ def render() -> None:
             max_value=50,
             value=10,
             key="eval_top_k",
-            help="Number of chunks to retrieve per query.",
+            help="每个 query 要检索的 Chunk 数量。",
         )
 
     with col3:
-        collection = st.text_input(
-            "Collection (optional)",
-            value="",
+        _available_collections = []
+        if DataService is not None:
+            try:
+                _available_collections = DataService().list_collections()
+            except Exception:
+                _available_collections = ["default"]
+        if not _available_collections:
+            _available_collections = ["default"]
+        collection = st.selectbox(
+            "Collection",
+            options=_available_collections,
+            index=0,
             key="eval_collection",
-            help="Limit retrieval to a specific collection.",
+            help="选择要评估的 Collection 分组。",
         )
 
-    # Golden test set file selection
-    golden_path_str = st.text_input(
-        "Golden Test Set Path",
-        value=str(DEFAULT_GOLDEN_SET),
-        key="eval_golden_path",
-        help="Path to the golden_test_set.json file.",
+    # ── 上传 JSON 问答对数据集 ──────────────────────────────
+    uploaded_file = st.file_uploader(
+        "上传问答对数据集（JSON）",
+        type=["json"],
+        key="eval_json_upload",
+        help="上传包含 test_cases 数组的 JSON 文件，每个元素需包含 query 字段。",
     )
-    golden_path = Path(golden_path_str)
-
-    # Validate golden set exists
-    if not golden_path.exists():
-        st.warning(
-            f"⚠️ **Golden test set not found:** `{golden_path}`. "
-            "Create a JSON file with test queries and expected results. "
-            "See `tests/fixtures/golden_test_set.json` for the format."
-        )
-
-    # ── Answer Input Section (for Ragas) ───────────────────────────
-    user_answers: Dict[int, str] = {}
-    if backend == "ragas" and golden_path.exists():
-        st.divider()
-        st.subheader("✏️ Provide Answers (回答输入)")
+    _schema_path = Path(__file__).resolve().parent.parent.parent.parent.parent / "docs" / "evaluation_dataset_schema.md"
+    _schema_col1, _schema_col2 = st.columns([3, 1])
+    with _schema_col1:
         st.caption(
-            "**RAGAS 需要 Query + Context + Answer 三要素来评估。**"
-            "日志中仅包含 Query 和检索到的上下文（Context），"
-            "请为每个测试用例填写实际的系统回答（Answer），"
-            "以便获得有意义的 faithfulness 和 answer_relevancy 评分。"
+            "📖 必填字段：`query`；可选：`reference_answer`、`expected_chunk_ids`、`expected_sources`。"
         )
+    with _schema_col2:
+        if _schema_path.exists():
+            st.download_button(
+                label="📥 下载格式规范",
+                data=_schema_path.read_text(encoding="utf-8"),
+                file_name="evaluation_dataset_schema.md",
+                mime="text/markdown",
+                key="eval_schema_download",
+            )
+        else:
+            st.caption("⚠️ 格式规范文件未找到")
+    golden_path = DEFAULT_GOLDEN_SET  # fallback
+    _upload_valid = False
+    if uploaded_file is not None:
+        try:
+            _uploaded_data = json.loads(uploaded_file.getvalue().decode("utf-8"))
+            # Normalize to test_cases list
+            _raw_cases = []
+            if isinstance(_uploaded_data, dict) and "test_cases" in _uploaded_data:
+                _raw_cases = _uploaded_data["test_cases"]
+            elif isinstance(_uploaded_data, list):
+                _raw_cases = _uploaded_data
+            else:
+                st.error("❌ JSON 格式不正确：需要包含 test_cases 数组或顶层为数组。")
+
+            # Validate each test case before accepting
+            if _raw_cases:
+                _validation_errors = []
+                for _idx, _tc in enumerate(_raw_cases):
+                    if not isinstance(_tc, dict):
+                        _validation_errors.append(f"第 {_idx + 1} 条：不是有效的 JSON 对象")
+                        continue
+                    if "query" not in _tc:
+                        _validation_errors.append(f"第 {_idx + 1} 条：缺少必填字段 `query`")
+                    elif not isinstance(_tc["query"], str) or not _tc["query"].strip():
+                        _validation_errors.append(f"第 {_idx + 1} 条：`query` 必须为非空字符串")
+                    if "expected_chunk_ids" in _tc and not isinstance(_tc["expected_chunk_ids"], list):
+                        _validation_errors.append(f"第 {_idx + 1} 条：`expected_chunk_ids` 必须为数组")
+                    if "expected_sources" in _tc and not isinstance(_tc["expected_sources"], list):
+                        _validation_errors.append(f"第 {_idx + 1} 条：`expected_sources` 必须为数组")
+
+                if _validation_errors:
+                    _upload_valid = False
+                    st.error(f"❌ 数据集校验失败（共 {len(_validation_errors)} 个问题）：")
+                    for _err in _validation_errors[:20]:
+                        st.text(f"  • {_err}")
+                    if len(_validation_errors) > 20:
+                        st.caption(f"…还有 {len(_validation_errors) - 20} 个问题未显示")
+                else:
+                    _upload_valid = True
+                    _normalized = {"test_cases": _raw_cases}
+                    _tmp_path = Path("/tmp/eval_uploaded_test_set.json")
+                    _tmp_path.write_text(json.dumps(_normalized, ensure_ascii=False), encoding="utf-8")
+                    golden_path = _tmp_path
+                    _ref_count = sum(1 for _tc in _raw_cases if _tc.get("reference_answer"))
+                    st.success(
+                        f"✅ 校验通过，已加载 {len(_raw_cases)} 条测试用例"
+                        f"（其中 {_ref_count} 条含参考答案）。"
+                    )
+            else:
+                st.error("❌ JSON 格式不正确：需要包含 test_cases 数组或顶层为数组。")
+        except json.JSONDecodeError as e:
+            st.error(f"❌ JSON 解析失败：{e}")
+    else:
+        if golden_path.exists():
+            st.info(f"ℹ️ 未上传文件，将使用默认测试集：`{golden_path}`")
+        else:
+            st.warning(
+                "⚠️ **请上传 JSON 问答对数据集。** "
+                'JSON 格式示例：`{"test_cases": [{"query": "...", "reference_answer": "..."}]}`'
+            )
+    # ── 数据集预览 ──────────────────────────────────────────
+    user_answers: Dict[int, str] = {}
+    if _upload_valid or golden_path.exists():
         try:
             _test_cases = _load_golden_queries(golden_path)
-            for tc_idx, tc in enumerate(_test_cases):
-                ans_key = f"eval_answer_tc_{tc_idx}"
-                default_val = tc.get("reference_answer", "")
-                q_preview = tc["query"][:60] + ("…" if len(tc["query"]) > 60 else "")
-                user_ans = st.text_area(
-                    f"Q{tc_idx + 1}: {q_preview}",
-                    value=st.session_state.get(ans_key, default_val),
-                    height=80,
-                    key=ans_key,
-                    placeholder="请输入该问题对应的系统回答…",
-                    help=(
-                        f"Query: {tc['query']}\n\n"
-                        "填写 LLM 生成的回答或期望的回答文本。"
-                        "Ragas 会基于此评估 faithfulness（忠实度）和 answer_relevancy（相关性）。"
-                    ),
-                )
-                if user_ans.strip():
-                    user_answers[tc_idx] = user_ans.strip()
-
-            # Show fill status
-            filled = len(user_answers)
-            total = len(_test_cases)
-            if filled < total:
-                st.warning(f"⚠️ 已填写 {filled}/{total} 个回答。未填写的用例将使用检索片段拼接作为回答（评估结果可能不准确）。")
-            else:
-                st.success(f"✅ 所有 {total} 个回答已填写。")
+            if _test_cases:
+                st.divider()
+                st.subheader("📋 数据集预览")
+                st.caption(f"共 {len(_test_cases)} 条问答对。包含 reference_answer 的用例将自动用于评估。")
+                for tc_idx, tc in enumerate(_test_cases):
+                    ref_ans = tc.get("reference_answer", "")
+                    if ref_ans and str(ref_ans).strip():
+                        user_answers[tc_idx] = str(ref_ans).strip()
+                if user_answers:
+                    st.success(f"✅ 数据集中已有 {len(user_answers)}/{len(_test_cases)} 条包含参考答案。")
+                else:
+                    st.info("ℹ️ 数据集中无 reference_answer 字段，评估时将使用检索片段拼接作为回答。")
         except Exception as exc:
-            st.warning(f"无法加载测试用例预览: {exc}")
+            st.warning(f"无法预览数据集: {exc}")
 
-    # ── Run Evaluation ─────────────────────────────────────────────
+    # ── 开始评估 ─────────────────────────────────────────────
     st.divider()
 
+    _can_run = _upload_valid or golden_path.exists()
     run_clicked = st.button(
-        "▶️  Run Evaluation",
+        "▶️  开始评估",
         type="primary",
         key="eval_run_btn",
-        disabled=not golden_path.exists(),
+        disabled=not _can_run,
     )
 
     if run_clicked:
@@ -159,6 +248,94 @@ def render() -> None:
     _render_history()
 
 
+def _render_quality_overview() -> None:
+    """Show the latest available quality signals without inventing missing scores."""
+    metrics, sources = _load_quality_snapshot()
+    st.divider()
+    st.subheader("质量指标总览")
+    st.caption("汇总当前已有的离线评测和线上调用记录；待评估表示尚无对应数据。")
+
+    groups = [
+        ("检索质量", ["hit_rate", "mrr"]),
+        ("上下文质量", ["context_precision", "context_recall"]),
+        (
+            "回答质量",
+            ["faithfulness", "answer_relevancy", "answer_correctness"],
+        ),
+        ("安全与性能", ["refusal_accuracy", "p95_latency"]),
+    ]
+    for group_name, names in groups:
+        st.markdown(f"**{group_name}**")
+        columns = st.columns(3)
+        for index, name in enumerate(names):
+            value = metrics.get(name)
+            display = _format_quality_value(name, value)
+            with columns[index]:
+                st.metric(METRIC_LABELS[name], display)
+                st.caption(
+                    f"{METRIC_ENGLISH[name]} · {sources.get(name, '暂无数据')}"
+                )
+
+
+def _load_quality_snapshot() -> tuple[Dict[str, float], Dict[str, str]]:
+    metrics: Dict[str, float] = {}
+    sources: Dict[str, str] = {}
+
+    if RAGAS_SAMPLE_PATH.exists():
+        try:
+            with RAGAS_SAMPLE_PATH.open("r", encoding="utf-8") as handle:
+                report = json.load(handle)
+            aggregate = report.get("aggregate", {})
+            sample_count = int(aggregate.get("total", report.get("limit", 0)))
+            source_label = f"Ragas 样本 {sample_count} 条"
+            for name, value in aggregate.get("average_metrics", {}).items():
+                if isinstance(value, (int, float)):
+                    metrics[name] = float(value)
+                    sources[name] = source_label
+        except (OSError, ValueError, TypeError):
+            logger.exception("Failed to load Ragas sample report")
+
+    history = _load_history()
+    # Metrics to load from evaluation history (in priority order)
+    _history_metrics = (
+        "hit_rate", "mrr",
+        "context_recall", "answer_correctness", "answer_correctness_verdict",
+        "faithfulness", "answer_relevancy", "context_precision",
+    )
+    for entry in reversed(history):
+        aggregate_metrics = entry.get("aggregate_metrics", {})
+        for name in _history_metrics:
+            value = aggregate_metrics.get(name)
+            if name not in metrics and isinstance(value, (int, float)):
+                metrics[name] = float(value)
+                count = int(entry.get("query_count", 0))
+                sources[name] = f"Golden Set {count} 条"
+
+    # Compute p95 from the latest evaluation history's query_results
+    if history:
+        latest = history[-1]
+        _qr = latest.get("query_results", [])
+        _latencies = sorted(
+            float(qr.get("elapsed_ms", 0))
+            for qr in _qr
+            if isinstance(qr.get("elapsed_ms"), (int, float)) and qr.get("elapsed_ms", 0) > 0
+        )
+        if _latencies:
+            _p95_idx = max(0, math.ceil(len(_latencies) * 0.95) - 1)
+            metrics["p95_latency"] = _latencies[_p95_idx]
+            sources["p95_latency"] = f"最近评估 {latest.get('query_count', 0)} 条"
+
+    return metrics, sources
+
+
+def _format_quality_value(name: str, value: Optional[float]) -> str:
+    if value is None:
+        return "待评估"
+    if name == "p95_latency":
+        return f"{value / 1000:.2f} s"
+    return f"{value:.3f}"
+
+
 def _run_evaluation(
     backend: str,
     golden_path: Path,
@@ -166,28 +343,47 @@ def _run_evaluation(
     collection: Optional[str],
     user_answers: Optional[Dict[int, str]] = None,
 ) -> None:
-    """Execute an evaluation run and display results.
+    """Execute an evaluation run and display results with live progress."""
+    # Pre-load test cases count for progress bar
+    try:
+        with golden_path.open("r", encoding="utf-8") as _f:
+            _tc_data = json.load(_f)
+        _total_cases = len(_tc_data.get("test_cases", []))
+    except Exception:
+        _total_cases = 0
 
-    Attempts to load the evaluator, run the golden test set, and
-    display aggregate + per-query metrics.  Falls back to a graceful
-    error message on failure.
-    """
-    with st.spinner("Loading evaluator and running evaluation…"):
-        try:
-            report_dict = _execute_evaluation(
-                backend=backend,
-                golden_path=golden_path,
-                top_k=top_k,
-                collection=collection,
-                user_answers=user_answers,
-            )
-        except Exception as exc:
-            st.error(f"❌ Evaluation failed: {exc}")
-            logger.exception("Evaluation failed")
-            return
+    progress_bar = st.progress(0, text="正在初始化评估…")
+    status_text = st.empty()
 
+    def _on_progress(current: int, total: int, query: str, elapsed_ms: float) -> None:
+        pct = current / total if total > 0 else 0
+        progress_bar.progress(pct, text=f"评估中 {current}/{total} ({pct:.0%})")
+        status_text.caption(
+            f"⏱️ 当前: {elapsed_ms/1000:.1f}s | "
+            f"已完成: {current}/{total} | "
+            f"问题: {query[:60]}{'…' if len(query) > 60 else ''}"
+        )
+
+    try:
+        report_dict = _execute_evaluation(
+            backend=backend,
+            golden_path=golden_path,
+            top_k=top_k,
+            collection=collection,
+            user_answers=user_answers,
+            progress_callback=_on_progress,
+        )
+    except Exception as exc:
+        progress_bar.empty()
+        status_text.empty()
+        st.error(f"❌ 评估失败：{exc}")
+        logger.exception("Evaluation failed")
+        return
+
+    progress_bar.progress(1.0, text="✅ 评估完成")
+    status_text.empty()
     # ── Display results ────────────────────────────────────────────
-    st.success("✅ Evaluation complete!")
+    st.success("✅ 评估完成！")
 
     _render_aggregate_metrics(report_dict)
     _render_query_details(report_dict)
@@ -202,6 +398,7 @@ def _execute_evaluation(
     top_k: int,
     collection: Optional[str],
     user_answers: Optional[Dict[int, str]] = None,
+    progress_callback=None,
 ) -> Dict[str, Any]:
     """Run the evaluation pipeline and return the report dict.
 
@@ -219,10 +416,17 @@ def _execute_evaluation(
     # Override evaluator provider from UI selection — build a new full
     # Settings object so that RagasEvaluator can still access .llm / .embedding.
     eval_settings = settings.evaluation
+    # When using ragas backend, override metrics to Ragas-supported set
+    # so that filtering in RagasEvaluator doesn't leave an empty/useless list.
+    _ragas_metrics = ["faithfulness", "answer_relevancy", "context_precision", "context_recall"]
+    if backend == "ragas":
+        _effective_metrics = _ragas_metrics
+    else:
+        _effective_metrics = eval_settings.metrics if hasattr(eval_settings, "metrics") else []
     overridden_eval = type(eval_settings)(
         enabled=True,
         provider=backend,
-        metrics=eval_settings.metrics if hasattr(eval_settings, "metrics") else [],
+        metrics=_effective_metrics,
     )
     # Replace only the evaluation sub-config in the full settings
     settings_with_override = dc_replace(settings, evaluation=overridden_eval)
@@ -245,11 +449,14 @@ def _execute_evaluation(
 
     # Build answer_override map: index → user-provided answer text
     # EvalRunner will use these instead of auto-generating from chunks.
+    # NOTE: user_answers (reference_answer from golden set) are used as
+    # ground_truth for context_recall / answer_correctness, NOT as answer overrides.
+    # LLM should always generate the answer for Ragas evaluation.
     runner = EvalRunner(
         settings=settings,
         hybrid_search=hybrid_search,
         evaluator=evaluator,
-        answer_overrides=user_answers,
+        answer_overrides=None,  # Never override; let LLM generate answers
         reranker=reranker,
     )
 
@@ -257,6 +464,7 @@ def _execute_evaluation(
         test_set_path=golden_path,
         top_k=top_k,
         collection=collection,
+        progress_callback=progress_callback,
     )
 
     return report.to_dict()
@@ -307,37 +515,44 @@ def _try_create_hybrid_search(settings: Any, collection: str = "default") -> Any
 
 
 def _render_aggregate_metrics(report: Dict[str, Any]) -> None:
-    """Display aggregate metrics as metric cards."""
-    st.subheader("📊 Aggregate Metrics")
+    """Display aggregate metrics as metric cards, including p95 from this run."""
+    st.subheader("📊 聚合指标")
+    agg = dict(report.get("aggregate_metrics", {}))
 
-    agg = report.get("aggregate_metrics", {})
+    # Compute p95 latency from this evaluation's query_results
+    query_results = report.get("query_results", [])
+    latencies = sorted(
+        float(qr.get("elapsed_ms", 0))
+        for qr in query_results
+        if isinstance(qr.get("elapsed_ms"), (int, float)) and qr.get("elapsed_ms", 0) > 0
+    )
+    if latencies:
+        p95_idx = max(0, math.ceil(len(latencies) * 0.95) - 1)
+        agg["p95_latency"] = latencies[p95_idx]
 
     if not agg:
-        st.info("No aggregate metrics available.")
+        st.info("暂无聚合指标结果。")
         return
-
     cols = st.columns(min(len(agg), 4))
     for idx, (name, value) in enumerate(sorted(agg.items())):
+        display = f"{value / 1000:.2f}s" if name == "p95_latency" else f"{value:.4f}"
         with cols[idx % len(cols)]:
             st.metric(
-                label=name.replace("_", " ").title(),
-                value=f"{value:.4f}",
+                label=METRIC_LABELS.get(name, name.replace("_", " ").title()),
+                value=display,
             )
-
     st.caption(
-        f"Evaluator: **{report.get('evaluator_name', '—')}** · "
-        f"Queries: **{report.get('query_count', 0)}** · "
-        f"Total time: **{report.get('total_elapsed_ms', 0):.0f} ms**"
+        f"Evaluator： **{report.get('evaluator_name', '-')}** · "
+        f"Queries： **{report.get('query_count', 0)}** · "
+        f"总耗时： **{report.get('total_elapsed_ms', 0):.0f} ms**"
     )
-
-
 def _render_query_details(report: Dict[str, Any]) -> None:
     """Display per-query evaluation results in an expandable table."""
-    st.subheader("🔍 Per-Query Details")
+    st.subheader("🔍 单条 Query 明细")
 
     query_results = report.get("query_results", [])
     if not query_results:
-        st.info("No per-query results available.")
+        st.info("\u6682\u65e0\u5355\u6761 Query \u8bc4\u4f30\u7ed3\u679c\u3002")
         return
 
     for idx, qr in enumerate(query_results):
@@ -350,7 +565,7 @@ def _render_query_details(report: Dict[str, Any]) -> None:
             f"{k}: {v:.3f}" for k, v in sorted(metrics.items())
         )
         if not metric_summary:
-            metric_summary = "no metrics"
+            metric_summary = "\u65e0\u6307\u6807"
 
         with st.expander(
             f"**Q{idx + 1}**: {query[:80]} — {elapsed:.0f} ms — {metric_summary}",
@@ -366,26 +581,26 @@ def _render_query_details(report: Dict[str, Any]) -> None:
             # Retrieved chunks
             chunks = qr.get("retrieved_chunk_ids", [])
             if chunks:
-                st.markdown(f"**Retrieved Chunks** ({len(chunks)}):")
+                st.markdown(f"**Retrieved Chunks\uff1a{len(chunks)} \u6761**")
                 st.code(", ".join(chunks[:20]), language=None)
 
             # Generated answer
             answer = qr.get("generated_answer")
             if answer:
-                st.markdown("**Generated Answer:**")
+                st.markdown("**\u751f\u6210\u56de\u7b54**")
                 st.text(answer[:500])
 
 
 def _render_history() -> None:
     """Display historical evaluation results for comparison."""
-    st.subheader("📈 Evaluation History")
+    st.subheader("📈 评估历史")
 
     history = _load_history()
     if not history:
         st.info(
-            "**No evaluation history yet.** "
-            "Configure the evaluator above and click \"Run Evaluation\" to start. "
-            "Results will be saved here for comparison across runs."
+            "**\u6682\u65e0\u8bc4\u4f30\u5386\u53f2\u8bb0\u5f55\u3002** "
+            "请先在上方配置 evaluator，然后点击开始评估按钮。"
+            "\u5b8c\u6210\u4e4b\u540e\uff0c\u8fd9\u91cc\u4f1a\u663e\u793a\u6700\u8fd1\u7684\u8bc4\u4f30\u8fd0\u884c\u7ed3\u679c\u3002"
         )
         return
 
@@ -394,10 +609,10 @@ def _render_history() -> None:
     for entry in history[-10:]:  # last 10 runs
         rows.append(
             {
-                "Timestamp": entry.get("timestamp", "—"),
-                "Evaluator": entry.get("evaluator_name", "—"),
+                "\u65f6\u95f4": entry.get("timestamp", "\u2014"),
+                "Evaluator": entry.get("evaluator_name", "\u2014"),
                 "Queries": entry.get("query_count", 0),
-                "Time (ms)": round(entry.get("total_elapsed_ms", 0)),
+                "\u8017\u65f6 (ms)": round(entry.get("total_elapsed_ms", 0)),
                 **{
                     k: round(v, 4)
                     for k, v in entry.get("aggregate_metrics", {}).items()

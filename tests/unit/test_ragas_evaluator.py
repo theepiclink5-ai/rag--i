@@ -238,3 +238,53 @@ class TestRagasEvaluatorFactory:
         providers = EvaluatorFactory.list_providers()
         assert "custom" in providers
         # ragas may be in _PROVIDERS after first create or in _LAZY_PROVIDERS
+
+
+class TestRagasProviderCompatibility:
+    def test_deepseek_and_jina_use_openai_compatible_clients(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        settings = MagicMock()
+        settings.llm.provider = "deepseek"
+        settings.llm.model = "deepseek-v4-flash"
+        settings.llm.api_key = "deepseek-key"
+        settings.llm.base_url = None
+        settings.embedding.provider = "jina"
+        settings.embedding.model = "jina-embeddings-v5-text-small"
+        settings.embedding.api_key = "jina-key"
+        settings.embedding.base_url = "https://api.jina.ai/v1"
+        evaluator = RagasEvaluator(settings=settings, metrics=["answer_relevancy"])
+
+        with (
+            patch("openai.AsyncOpenAI") as client_class,
+            patch("ragas.llms.llm_factory", return_value="llm") as llm_factory,
+            patch("ragas.embeddings.OpenAIEmbeddings", return_value="emb") as emb_class,
+        ):
+            llm, embeddings = evaluator._build_wrappers()
+
+        assert (llm, embeddings) == ("llm", "emb")
+        assert client_class.call_args_list[0].kwargs["base_url"] == "https://api.deepseek.com"
+        assert client_class.call_args_list[1].kwargs["base_url"] == "https://api.jina.ai/v1"
+        llm_factory.assert_called_once()
+        assert llm_factory.call_args.kwargs["max_tokens"] == 32768
+        emb_class.assert_called_once()
+
+    def test_embedding_is_not_built_when_metric_does_not_need_it(self) -> None:
+        from src.observability.evaluation.ragas_evaluator import RagasEvaluator
+
+        settings = MagicMock()
+        settings.llm.provider = "deepseek"
+        settings.llm.model = "deepseek-v4-flash"
+        settings.llm.api_key = "deepseek-key"
+        settings.llm.base_url = None
+        evaluator = RagasEvaluator(settings=settings, metrics=["faithfulness"])
+
+        with (
+            patch("openai.AsyncOpenAI"),
+            patch("ragas.llms.llm_factory", return_value="llm"),
+            patch("ragas.embeddings.OpenAIEmbeddings") as emb_class,
+        ):
+            llm, embeddings = evaluator._build_wrappers(require_embeddings=False)
+
+        assert (llm, embeddings) == ("llm", None)
+        emb_class.assert_not_called()

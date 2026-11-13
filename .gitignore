@@ -105,3 +105,8 @@ traces.jsonl
 .env.*.local
 secrets.yaml
 nonexistent_traces.jsonl/
+
+# Backup files
+*.bak
+*.bak.*
+*.refactor-backup
